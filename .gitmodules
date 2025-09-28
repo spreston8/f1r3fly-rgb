@@ -4,3 +4,6 @@
 [submodule "bp-esplora-client"]
 	path = bp-esplora-client
 	url = git@github.com:spreston8/bp-esplora-client.git
+[submodule "bp-std"]
+	path = bp-std
+	url = git@github.com:spreston8/bp-std.git
