@@ -1,3 +1,6 @@
 [submodule "rgb-wallet"]
 	path = rgb-wallet
 	url = git@github.com:spreston8/f1r3fly-rgb.git
+[submodule "bp-esplora-client"]
+	path = bp-esplora-client
+	url = git@github.com:spreston8/bp-esplora-client.git
