@@ -7,3 +7,7 @@
 [submodule "bp-std"]
 	path = bp-std
 	url = git@github.com:spreston8/bp-std.git
+[submodule "rgb"]
+	path = rgb
+	url = git@github.com:spreston8/rgb.git
+	branch = dev
