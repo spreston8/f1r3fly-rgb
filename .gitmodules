@@ -8,3 +8,6 @@
 	path = rgb
 	url = git@github.com:spreston8/rgb.git
 	branch = dev
+[submodule "rgb-wallet"]
+	path = rgb-wallet
+	url = git@github.com:spreston8/rgb-wallet.git
