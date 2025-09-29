@@ -1,6 +1,7 @@
 [submodule "bp-esplora-client"]
 	path = bp-esplora-client
 	url = git@github.com:spreston8/bp-esplora-client.git
+	branch = master
 [submodule "bp-std"]
 	path = bp-std
 	url = git@github.com:spreston8/bp-std.git
@@ -12,3 +13,8 @@
 [submodule "rgb-wallet"]
 	path = rgb-wallet
 	url = git@github.com:spreston8/rgb-wallet.git
+	branch = master
+[submodule "rgb-std"]
+	path = rgb-std
+	url = git@github.com:spreston8/rgb-std.git
+	branch = dev
