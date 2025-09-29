@@ -26,3 +26,7 @@
 	path = rust-client
 	url = git@github.com:F1R3FLY-io/rust-client.git
 	branch = main
+[submodule "f1r3node"]
+	path = f1r3node
+	url = git@github.com:F1R3FLY-io/f1r3node.git
+	branch = rust/dev
