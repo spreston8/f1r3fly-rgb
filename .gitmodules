@@ -22,3 +22,7 @@
 	path = rgb-core
 	url = git@github.com:spreston8/rgb-core.git
 	branch = master
+[submodule "rust-client"]
+	path = rust-client
+	url = git@github.com:F1R3FLY-io/rust-client.git
+	branch = main
