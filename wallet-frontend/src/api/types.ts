@@ -8,6 +8,11 @@ export interface ImportWalletRequest {
   mnemonic: string;
 }
 
+export interface CreateUtxoRequest {
+  amount_btc?: number;
+  fee_rate_sat_vb?: number;
+}
+
 // Response types
 export interface WalletInfo {
   name: string;
@@ -35,12 +40,21 @@ export interface NextAddressInfo {
   descriptor: string;
 }
 
+export interface BoundAsset {
+  asset_id: string;
+  asset_name: string;
+  ticker: string;
+  amount: string;
+}
+
 export interface UTXO {
   txid: string;
   vout: number;
   amount_sats: number;
   address: string;
   confirmations: number;
+  is_occupied: boolean;
+  bound_assets: BoundAsset[];
 }
 
 export interface BalanceInfo {
@@ -54,6 +68,25 @@ export interface SyncResult {
   synced_height: number;
   addresses_checked: number;
   new_transactions: number;
+}
+
+export interface CreateUtxoResponse {
+  txid: string;
+  amount_sats: number;
+  fee_sats: number;
+  target_address: string;
+}
+
+export interface UnlockUtxoRequest {
+  txid: string;
+  vout: number;
+  fee_rate_sat_vb?: number;
+}
+
+export interface UnlockUtxoResponse {
+  txid: string;
+  recovered_sats: number;
+  fee_sats: number;
 }
 
 // Error response type

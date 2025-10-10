@@ -80,6 +80,55 @@ impl TransactionBuilder {
         Ok(tx)
     }
 
+    pub fn build_unlock_utxo_tx(
+        &self,
+        utxo: &UTXO,
+        destination_address: Address,
+        fee_rate_sat_vb: u64,
+    ) -> Result<Transaction, crate::error::WalletError> {
+        let estimated_size = self.estimate_tx_size(1, 1);
+        let fee = estimated_size * fee_rate_sat_vb;
+
+        if utxo.amount_sats <= fee {
+            return Err(crate::error::WalletError::InsufficientFunds(
+                format!("UTXO amount ({} sats) is not enough to cover fee ({} sats)", utxo.amount_sats, fee)
+            ));
+        }
+
+        let output_amount = utxo.amount_sats - fee;
+
+        if output_amount < 546 {
+            return Err(crate::error::WalletError::InsufficientFunds(
+                format!("Output amount ({} sats) would be below dust limit (546 sats)", output_amount)
+            ));
+        }
+
+        let mut tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+
+        tx.input.push(TxIn {
+            previous_output: OutPoint {
+                txid: utxo.txid.parse()
+                    .map_err(|e| crate::error::WalletError::Bitcoin(format!("Invalid txid: {}", e)))?,
+                vout: utxo.vout,
+            },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        });
+
+        tx.output.push(TxOut {
+            value: bitcoin::Amount::from_sat(output_amount),
+            script_pubkey: destination_address.script_pubkey(),
+        });
+
+        Ok(tx)
+    }
+
     pub fn sign_transaction(
         &self,
         mut tx: Transaction,

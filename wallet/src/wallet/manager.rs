@@ -1,6 +1,7 @@
 use super::addresses::AddressManager;
 use super::balance::BalanceChecker;
 use super::keys::KeyManager;
+use super::rgb::RgbManager;
 use super::storage::{Metadata, Storage};
 use bitcoin::Network;
 use chrono::Utc;
@@ -9,13 +10,20 @@ use std::str::FromStr;
 pub struct WalletManager {
     storage: Storage,
     balance_checker: BalanceChecker,
+    rgb_manager: RgbManager,
 }
 
 impl WalletManager {
     pub fn new() -> Self {
+        let storage = Storage::new();
+        let rgb_data_dir = storage.base_dir().join("rgb_data");
+        let rgb_manager = RgbManager::new(rgb_data_dir, bpstd::Network::Signet)
+            .expect("Failed to initialize RGB manager");
+        
         Self {
-            storage: Storage::new(),
+            storage,
             balance_checker: BalanceChecker::new(),
+            rgb_manager,
         }
     }
 
@@ -168,7 +176,27 @@ impl WalletManager {
 
         let address_list: Vec<_> = addresses.into_iter().map(|(_, addr)| addr).collect();
 
-        let balance = self.balance_checker.calculate_balance(&address_list).await?;
+        let mut balance = self.balance_checker.calculate_balance(&address_list).await?;
+
+        // Check each UTXO for RGB assets
+        for utxo in &mut balance.utxos {
+            let txid = match utxo.txid.parse::<bitcoin::Txid>() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            // Check if UTXO is occupied by RGB assets
+            if let Ok(is_occupied) = self.rgb_manager.check_utxo_occupied(txid, utxo.vout) {
+                utxo.is_occupied = is_occupied;
+
+                // If occupied, get the bound assets
+                if is_occupied {
+                    if let Ok(assets) = self.rgb_manager.get_bound_assets(txid, utxo.vout) {
+                        utxo.bound_assets = assets;
+                    }
+                }
+            }
+        }
 
         Ok(balance)
     }
@@ -296,6 +324,74 @@ impl WalletManager {
             target_address: recipient_address.to_string(),
         })
     }
+
+    pub async fn unlock_utxo(
+        &self,
+        name: &str,
+        request: UnlockUtxoRequest,
+    ) -> Result<UnlockUtxoResult, crate::error::WalletError> {
+        if !self.storage.wallet_exists(name) {
+            return Err(crate::error::WalletError::WalletNotFound(name.to_string()));
+        }
+
+        let fee_rate = request.fee_rate_sat_vb.unwrap_or(2);
+
+        let balance = self.get_balance(name).await?;
+
+        let target_utxo = balance.utxos.iter()
+            .find(|u| u.txid == request.txid && u.vout == request.vout)
+            .ok_or_else(|| crate::error::WalletError::Internal(
+                format!("UTXO {}:{} not found", request.txid, request.vout)
+            ))?
+            .clone();
+
+        let descriptor = self.storage.load_descriptor(name)?;
+        let mut state = self.storage.load_state(name)?;
+
+        let mut next_index = 0;
+        while state.used_addresses.contains(&next_index) {
+            next_index += 1;
+        }
+        state.used_addresses.push(next_index);
+
+        let destination_address = AddressManager::derive_address(&descriptor, next_index, Network::Signet)?;
+
+        let tx_builder = super::transaction::TransactionBuilder::new(Network::Signet);
+        
+        let tx = tx_builder.build_unlock_utxo_tx(
+            &target_utxo,
+            destination_address.clone(),
+            fee_rate,
+        )?;
+
+        let mnemonic = self.storage.load_mnemonic(name)?;
+        let seed = mnemonic.to_seed("");
+        let master_key = bitcoin::bip32::Xpriv::new_master(Network::Signet, &seed)
+            .map_err(|e| crate::error::WalletError::Bitcoin(e.to_string()))?;
+
+        let path = bitcoin::bip32::DerivationPath::from_str("m/84'/1'/0'/0/0")
+            .map_err(|e| crate::error::WalletError::Bitcoin(e.to_string()))?;
+        
+        let derived_key = master_key.derive_priv(&bitcoin::secp256k1::Secp256k1::new(), &path)
+            .map_err(|e| crate::error::WalletError::Bitcoin(e.to_string()))?;
+
+        let private_key = bitcoin::PrivateKey::new(derived_key.private_key, Network::Signet);
+
+        let signed_tx = tx_builder.sign_transaction(tx, &vec![target_utxo.clone()], &private_key)?;
+
+        let txid = super::transaction::broadcast_transaction(&signed_tx, Network::Signet).await?;
+
+        let fee_sats = target_utxo.amount_sats - signed_tx.output[0].value.to_sat();
+        let recovered_sats = signed_tx.output[0].value.to_sat();
+
+        self.storage.save_state(name, &state)?;
+
+        Ok(UnlockUtxoResult {
+            txid,
+            recovered_sats,
+            fee_sats,
+        })
+    }
 }
 
 use serde::{Deserialize, Serialize};
@@ -349,5 +445,19 @@ pub struct CreateUtxoResult {
     pub amount_sats: u64,
     pub fee_sats: u64,
     pub target_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnlockUtxoRequest {
+    pub txid: String,
+    pub vout: u32,
+    pub fee_rate_sat_vb: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnlockUtxoResult {
+    pub txid: String,
+    pub recovered_sats: u64,
+    pub fee_sats: u64,
 }
 

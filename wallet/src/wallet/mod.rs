@@ -4,4 +4,5 @@ pub mod balance;
 pub mod storage;
 pub mod manager;
 pub mod transaction;
+pub mod rgb;
 

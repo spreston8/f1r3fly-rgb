@@ -168,7 +168,11 @@ export default function WalletDetail() {
       )}
 
       {balance && balance.utxos.length > 0 && (
-        <UTXOList utxos={balance.utxos} />
+        <UTXOList 
+          walletName={name || ''} 
+          utxos={balance.utxos} 
+          onRefresh={loadWalletData}
+        />
       )}
 
       {nextAddress && (

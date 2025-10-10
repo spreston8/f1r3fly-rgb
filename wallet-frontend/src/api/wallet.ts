@@ -8,6 +8,10 @@ import type {
   SyncResult,
   CreateWalletRequest,
   ImportWalletRequest,
+  CreateUtxoRequest,
+  CreateUtxoResponse,
+  UnlockUtxoRequest,
+  UnlockUtxoResponse,
 } from './types';
 
 export const walletApi = {
@@ -68,6 +72,34 @@ export const walletApi = {
    */
   syncWallet: async (name: string): Promise<SyncResult> => {
     const response = await apiClient.post<SyncResult>(`/wallet/${name}/sync`);
+    return response.data;
+  },
+
+  /**
+   * Create a new RGB-compatible UTXO
+   */
+  createUtxo: async (
+    name: string,
+    request: CreateUtxoRequest
+  ): Promise<CreateUtxoResponse> => {
+    const response = await apiClient.post<CreateUtxoResponse>(
+      `/wallet/${name}/create-utxo`,
+      request
+    );
+    return response.data;
+  },
+
+  /**
+   * Unlock a UTXO (send entire amount minus fee to a new address)
+   */
+  unlockUtxo: async (
+    name: string,
+    request: UnlockUtxoRequest
+  ): Promise<UnlockUtxoResponse> => {
+    const response = await apiClient.post<UnlockUtxoResponse>(
+      `/wallet/${name}/unlock-utxo`,
+      request
+    );
     return response.data;
   },
 };

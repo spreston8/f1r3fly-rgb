@@ -4,6 +4,7 @@ import Home from './pages/Home';
 import CreateWallet from './pages/CreateWallet';
 import ImportWallet from './pages/ImportWallet';
 import WalletDetail from './pages/WalletDetail';
+import Docs from './pages/Docs';
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
           <Route path="/create" element={<CreateWallet />} />
           <Route path="/import" element={<ImportWallet />} />
           <Route path="/wallet/:name" element={<WalletDetail />} />
+          <Route path="/docs" element={<Docs />} />
         </Routes>
       </Layout>
     </BrowserRouter>

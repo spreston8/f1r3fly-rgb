@@ -15,6 +15,10 @@ impl Storage {
         }
     }
 
+    pub fn base_dir(&self) -> &PathBuf {
+        &self.base_path
+    }
+
     fn wallet_dir(&self, name: &str) -> PathBuf {
         self.base_path.join(name)
     }

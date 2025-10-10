@@ -35,6 +35,9 @@ pub enum WalletError {
     #[error("Network error: {0}")]
     Network(String),
 
+    #[error("RGB error: {0}")]
+    Rgb(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }

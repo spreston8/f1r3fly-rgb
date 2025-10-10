@@ -8,6 +8,14 @@ edition = "2021"
 bitcoin = { version = "0.32", features = ["rand-std"] }
 bip39 = "2.0"
 
+# RGB libraries
+rgb = { package = "rgb-runtime", version = "0.12.0-rc.3", path = "../rgb" }
+rgb-std = { version = "0.12.0-rc.3", path = "../rgb-std" }
+rgb-persist-fs = { version = "0.12.0-rc.3", path = "../rgb-std/persistence/fs" }
+bpstd = { package = "bp-std", version = "0.12.0-rc.3", path = "../bp-std" }
+hypersonic = "0.12.0"
+amplify = "4.9.0"
+
 # HTTP server
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }

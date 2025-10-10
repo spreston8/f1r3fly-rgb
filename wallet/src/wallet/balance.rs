@@ -59,6 +59,8 @@ impl BalanceChecker {
                     amount_sats,
                     address: address.to_string(),
                     confirmations,
+                    is_occupied: false,
+                    bound_assets: Vec::new(),
                 })
             })
             .collect();
@@ -162,6 +164,10 @@ pub struct UTXO {
     pub amount_sats: u64,
     pub address: String,
     pub confirmations: u32,
+    /// Indicates if this UTXO has RGB assets bound to it
+    pub is_occupied: bool,
+    /// RGB assets bound to this UTXO (empty if not occupied)
+    pub bound_assets: Vec<super::rgb::BoundAsset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -25,3 +25,17 @@ pub struct CreateUtxoResponse {
     pub target_address: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UnlockUtxoRequest {
+    pub txid: String,
+    pub vout: u32,
+    pub fee_rate_sat_vb: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnlockUtxoResponse {
+    pub txid: String,
+    pub recovered_sats: u64,
+    pub fee_sats: u64,
+}
+
