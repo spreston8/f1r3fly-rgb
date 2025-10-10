@@ -1,0 +1,33 @@
+[package]
+name = "wallet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Bitcoin & BIP standards
+bitcoin = { version = "0.32", features = ["rand-std"] }
+bip39 = "2.0"
+
+# HTTP server
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+# HTTP client (Esplora)
+reqwest = { version = "0.11", features = ["json"] }
+
+# Async utilities
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
