@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::wallet::manager::{AddressInfo, NextAddressInfo, SyncResult, WalletInfo, WalletManager, WalletMetadata};
 use crate::wallet::balance::BalanceInfo;
-use super::types::{CreateWalletRequest, ImportWalletRequest};
+use super::types::{CreateWalletRequest, ImportWalletRequest, CreateUtxoRequest, CreateUtxoResponse};
 
 pub async fn create_wallet_handler(
     State(manager): State<Arc<WalletManager>>,
@@ -73,5 +73,25 @@ pub async fn sync_wallet_handler(
 ) -> Result<Json<SyncResult>, crate::error::WalletError> {
     let result = manager.sync_wallet(&name).await?;
     Ok(Json(result))
+}
+
+pub async fn create_utxo_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(name): Path<String>,
+    Json(req): Json<CreateUtxoRequest>,
+) -> Result<Json<CreateUtxoResponse>, crate::error::WalletError> {
+    let manager_req = crate::wallet::manager::CreateUtxoRequest {
+        amount_btc: req.amount_btc,
+        fee_rate_sat_vb: req.fee_rate_sat_vb,
+    };
+    
+    let result = manager.create_utxo(&name, manager_req).await?;
+    
+    Ok(Json(CreateUtxoResponse {
+        txid: result.txid,
+        amount_sats: result.amount_sats,
+        fee_sats: result.fee_sats,
+        target_address: result.target_address,
+    }))
 }
 

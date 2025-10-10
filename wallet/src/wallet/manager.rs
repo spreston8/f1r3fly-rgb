@@ -4,6 +4,7 @@ use super::keys::KeyManager;
 use super::storage::{Metadata, Storage};
 use bitcoin::Network;
 use chrono::Utc;
+use std::str::FromStr;
 
 pub struct WalletManager {
     storage: Storage,
@@ -208,6 +209,93 @@ impl WalletManager {
             new_transactions,
         })
     }
+
+    pub async fn create_utxo(
+        &self,
+        name: &str,
+        request: CreateUtxoRequest,
+    ) -> Result<CreateUtxoResult, crate::error::WalletError> {
+        if !self.storage.wallet_exists(name) {
+            return Err(crate::error::WalletError::WalletNotFound(name.to_string()));
+        }
+
+        let amount_sats = match request.amount_btc {
+            Some(btc) => (btc * 100_000_000.0) as u64,
+            None => 30_000,
+        };
+
+        let fee_rate = request.fee_rate_sat_vb.unwrap_or(2);
+
+        let balance = self.get_balance(name).await?;
+        
+        if balance.utxos.is_empty() {
+            return Err(crate::error::WalletError::InsufficientFunds(
+                "No UTXOs available to create new UTXO".to_string()
+            ));
+        }
+
+        let descriptor = self.storage.load_descriptor(name)?;
+        let mut state = self.storage.load_state(name)?;
+
+        let mut next_index = 0;
+        while state.used_addresses.contains(&next_index) {
+            next_index += 1;
+        }
+        state.used_addresses.push(next_index);
+
+        let recipient_address = AddressManager::derive_address(&descriptor, next_index, Network::Signet)?;
+
+        let tx_builder = super::transaction::TransactionBuilder::new(Network::Signet);
+        
+        let tx = tx_builder.build_send_to_self(
+            &balance.utxos,
+            amount_sats,
+            fee_rate,
+            recipient_address.clone(),
+        )?;
+
+        let mnemonic = self.storage.load_mnemonic(name)?;
+
+        let seed = mnemonic.to_seed("");
+        let master_key = bitcoin::bip32::Xpriv::new_master(Network::Signet, &seed)
+            .map_err(|e| crate::error::WalletError::Bitcoin(e.to_string()))?;
+
+        let path = bitcoin::bip32::DerivationPath::from_str("m/84'/1'/0'/0/0")
+            .map_err(|e| crate::error::WalletError::Bitcoin(e.to_string()))?;
+        
+        let derived_key = master_key.derive_priv(&bitcoin::secp256k1::Secp256k1::new(), &path)
+            .map_err(|e| crate::error::WalletError::Bitcoin(e.to_string()))?;
+
+        let private_key = bitcoin::PrivateKey::new(derived_key.private_key, Network::Signet);
+
+        let signed_tx = tx_builder.sign_transaction(tx, &balance.utxos, &private_key)?;
+
+        let txid = super::transaction::broadcast_transaction(&signed_tx, Network::Signet).await?;
+
+        let total_input: u64 = balance.utxos.iter()
+            .filter(|u| {
+                signed_tx.input.iter().any(|input| {
+                    if let Ok(tid) = u.txid.parse::<bitcoin::Txid>() {
+                        tid == input.previous_output.txid && u.vout == input.previous_output.vout
+                    } else {
+                        false
+                    }
+                })
+            })
+            .map(|u| u.amount_sats)
+            .sum();
+        
+        let fee_sats = total_input - signed_tx.output.iter().map(|o| o.value.to_sat()).sum::<u64>();
+
+        self.storage.save_state(name, &state)?;
+
+        Ok(CreateUtxoResult {
+            txid,
+            amount_sats,
+            fee_sats,
+            target_address: recipient_address.to_string(),
+        })
+    }
 }
 
 use serde::{Deserialize, Serialize};
@@ -247,5 +335,19 @@ pub struct NextAddressInfo {
     pub index: u32,
     pub total_used: usize,
     pub descriptor: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateUtxoRequest {
+    pub amount_btc: Option<f64>,
+    pub fee_rate_sat_vb: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateUtxoResult {
+    pub txid: String,
+    pub amount_sats: u64,
+    pub fee_sats: u64,
+    pub target_address: String,
 }
 

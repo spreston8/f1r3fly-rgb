@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateWalletRequest {
@@ -9,5 +9,19 @@ pub struct CreateWalletRequest {
 pub struct ImportWalletRequest {
     pub name: String,
     pub mnemonic: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreateUtxoRequest {
+    pub amount_btc: Option<f64>,
+    pub fee_rate_sat_vb: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateUtxoResponse {
+    pub txid: String,
+    pub amount_sats: u64,
+    pub fee_sats: u64,
+    pub target_address: String,
 }
 

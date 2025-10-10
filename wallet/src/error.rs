@@ -29,6 +29,12 @@ pub enum WalletError {
     #[error("Esplora error: {0}")]
     Esplora(String),
 
+    #[error("Insufficient funds: {0}")]
+    InsufficientFunds(String),
+
+    #[error("Network error: {0}")]
+    Network(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -55,6 +61,8 @@ impl IntoResponse for WalletError {
             WalletError::WalletNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             WalletError::InvalidMnemonic(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             WalletError::InvalidDescriptor(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            WalletError::InsufficientFunds(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            WalletError::Network(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
 

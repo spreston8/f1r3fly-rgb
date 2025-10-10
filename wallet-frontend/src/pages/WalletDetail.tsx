@@ -5,6 +5,7 @@ import type { BalanceInfo, AddressInfo, NextAddressInfo } from '../api/types';
 import BalanceDisplay from '../components/BalanceDisplay';
 import AddressList from '../components/AddressList';
 import UTXOList from '../components/UTXOList';
+import CreateUtxoModal from '../components/CreateUtxoModal';
 import { copyToClipboard } from '../utils/format';
 
 export default function WalletDetail() {
@@ -19,6 +20,7 @@ export default function WalletDetail() {
   const [error, setError] = useState<string | null>(null);
   const [addressCopied, setAddressCopied] = useState(false);
   const [descriptorCopied, setDescriptorCopied] = useState(false);
+  const [showCreateUtxoModal, setShowCreateUtxoModal] = useState(false);
 
   useEffect(() => {
     if (name) {
@@ -141,7 +143,15 @@ export default function WalletDetail() {
         </Link>
       </div>
 
-      <h2 className="text-3xl font-bold text-gray-900 dark:text-white">💰 {name}</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-3xl font-bold text-gray-900 dark:text-white">💰 {name}</h2>
+        <button
+          onClick={() => setShowCreateUtxoModal(true)}
+          className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium"
+        >
+          ➕ Create UTXO
+        </button>
+      </div>
 
       {error && (
         <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4">
@@ -255,6 +265,16 @@ export default function WalletDetail() {
           {nextAddress ? nextAddress.descriptor : 'Loading...'}
         </p>
       </div>
+
+      <CreateUtxoModal
+        walletName={name || ''}
+        currentBalance={balance?.confirmed_sats || 0}
+        isOpen={showCreateUtxoModal}
+        onClose={() => setShowCreateUtxoModal(false)}
+        onSuccess={() => {
+          loadWalletData();
+        }}
+      />
     </div>
   );
 }
