@@ -69,17 +69,9 @@ export default function UnlockUtxoModal({
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <div className={`p-6 border-b ${
-          utxo.is_occupied
-            ? 'border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950'
-            : 'border-gray-200 dark:border-gray-700'
-        }`}>
-          <h2 className={`text-2xl font-bold ${
-            utxo.is_occupied
-              ? 'text-red-900 dark:text-red-200'
-              : 'text-gray-900 dark:text-white'
-          }`}>
-            {utxo.is_occupied ? '⚠️ UNLOCK UTXO - WARNING' : 'Unlock UTXO'}
+        <div className="p-6 border-b border-gray-200 dark:border-gray-700">
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+            {utxo.is_occupied ? '⚠️ Unlock UTXO' : '🔓 Unlock UTXO'}
           </h2>
         </div>
 
@@ -112,18 +104,18 @@ export default function UnlockUtxoModal({
 
           {/* RGB Asset Warning - Only for occupied UTXOs */}
           {utxo.is_occupied && utxo.bound_assets && utxo.bound_assets.length > 0 && (
-            <div className="bg-red-50 dark:bg-red-950 border-2 border-red-500 dark:border-red-700 rounded-lg p-4 space-y-3">
-              <div className="flex items-start space-x-2">
-                <span className="text-2xl">⛔</span>
+            <div className="bg-orange-50 dark:bg-orange-950/50 border border-orange-300 dark:border-orange-800 rounded-lg p-4 space-y-3">
+              <div className="flex items-start space-x-3">
+                <span className="text-xl">⚠️</span>
                 <div className="flex-1">
-                  <p className="text-sm font-bold text-red-900 dark:text-red-200 mb-2">
-                    YOU WILL FORFEIT THESE RGB ASSETS:
+                  <p className="text-sm font-semibold text-orange-900 dark:text-orange-200 mb-3">
+                    This UTXO contains RGB assets that will be forfeited:
                   </p>
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     {utxo.bound_assets.map((asset, idx) => (
                       <div
                         key={`${asset.asset_id}-${idx}`}
-                        className="bg-white dark:bg-gray-800 rounded p-3 border border-red-300 dark:border-red-800"
+                        className="bg-white dark:bg-gray-800 rounded p-3 border border-gray-200 dark:border-gray-700"
                       >
                         <div className="flex items-start justify-between mb-2">
                           <div className="flex items-center space-x-2">
@@ -161,8 +153,8 @@ export default function UnlockUtxoModal({
                       </div>
                     ))}
                   </div>
-                  <p className="text-sm font-bold text-red-900 dark:text-red-200 mt-3">
-                    These assets will be PERMANENTLY LOST and cannot be recovered.
+                  <p className="text-sm text-orange-800 dark:text-orange-300 mt-3">
+                    Note: These assets cannot be recovered after unlocking.
                   </p>
                 </div>
               </div>
@@ -173,10 +165,10 @@ export default function UnlockUtxoModal({
                   type="checkbox"
                   checked={confirmed}
                   onChange={(e) => setConfirmed(e.target.checked)}
-                  className="mt-1 w-4 h-4 text-red-600 border-red-300 rounded focus:ring-red-500"
+                  className="mt-1 w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
                 />
-                <span className="text-sm font-medium text-red-900 dark:text-red-200">
-                  I understand I will lose these RGB assets forever
+                <span className="text-sm text-gray-700 dark:text-gray-300">
+                  I understand these assets will be forfeited
                 </span>
               </label>
             </div>
@@ -213,11 +205,11 @@ export default function UnlockUtxoModal({
             disabled={loading || (utxo.is_occupied && !confirmed)}
             className={`px-4 py-2 text-sm font-medium text-white rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               utxo.is_occupied
-                ? 'bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-800'
-                : 'bg-yellow-500 hover:bg-yellow-600 dark:bg-yellow-600 dark:hover:bg-yellow-700'
+                ? 'bg-orange-600 hover:bg-orange-700 dark:bg-orange-700 dark:hover:bg-orange-800'
+                : 'bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700'
             }`}
           >
-            {loading ? 'Unlocking...' : utxo.is_occupied ? '⚠️ Unlock & Forfeit Assets' : '🔓 Unlock UTXO'}
+            {loading ? 'Unlocking...' : utxo.is_occupied ? 'Unlock UTXO' : 'Unlock UTXO'}
           </button>
         </div>
       </div>

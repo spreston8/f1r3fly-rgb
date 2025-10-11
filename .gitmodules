@@ -17,7 +17,7 @@
 [submodule "rgb-std"]
 	path = rgb-std
 	url = git@github.com:spreston8/rgb-std.git
-	branch = dev
+	branch = stable
 [submodule "rgb-core"]
 	path = rgb-core
 	url = git@github.com:spreston8/rgb-core.git

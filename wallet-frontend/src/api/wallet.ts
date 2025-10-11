@@ -12,6 +12,8 @@ import type {
   CreateUtxoResponse,
   UnlockUtxoRequest,
   UnlockUtxoResponse,
+  IssueAssetRequest,
+  IssueAssetResponse,
 } from './types';
 
 export const walletApi = {
@@ -98,6 +100,20 @@ export const walletApi = {
   ): Promise<UnlockUtxoResponse> => {
     const response = await apiClient.post<UnlockUtxoResponse>(
       `/wallet/${name}/unlock-utxo`,
+      request
+    );
+    return response.data;
+  },
+
+  /**
+   * Issue a new RGB20 asset
+   */
+  issueAsset: async (
+    name: string,
+    request: IssueAssetRequest
+  ): Promise<IssueAssetResponse> => {
+    const response = await apiClient.post<IssueAssetResponse>(
+      `/wallet/${name}/issue-asset`,
       request
     );
     return response.data;

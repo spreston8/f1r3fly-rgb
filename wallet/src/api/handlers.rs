@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::wallet::manager::{AddressInfo, NextAddressInfo, SyncResult, WalletInfo, WalletManager, WalletMetadata};
 use crate::wallet::balance::BalanceInfo;
+use crate::wallet::rgb::{IssueAssetRequest, IssueAssetResponse};
 use super::types::{CreateWalletRequest, ImportWalletRequest, CreateUtxoRequest, CreateUtxoResponse, UnlockUtxoRequest, UnlockUtxoResponse};
 
 pub async fn create_wallet_handler(
@@ -113,5 +114,21 @@ pub async fn unlock_utxo_handler(
         recovered_sats: result.recovered_sats,
         fee_sats: result.fee_sats,
     }))
+}
+
+pub async fn issue_asset_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(name): Path<String>,
+    Json(req): Json<IssueAssetRequest>,
+) -> Result<Json<IssueAssetResponse>, crate::error::WalletError> {
+    // Validate wallet exists
+    if !manager.storage.wallet_exists(&name) {
+        return Err(crate::error::WalletError::WalletNotFound(name));
+    }
+    
+    // Issue asset via RGB manager
+    let result = manager.rgb_manager.issue_rgb20_asset(req)?;
+    
+    Ok(Json(result))
 }
 

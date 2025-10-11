@@ -20,6 +20,9 @@ pub enum WalletError {
     #[error("Invalid descriptor: {0}")]
     InvalidDescriptor(String),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
 

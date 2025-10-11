@@ -6,6 +6,7 @@ import BalanceDisplay from '../components/BalanceDisplay';
 import AddressList from '../components/AddressList';
 import UTXOList from '../components/UTXOList';
 import CreateUtxoModal from '../components/CreateUtxoModal';
+import IssueAssetModal from '../components/IssueAssetModal';
 import { copyToClipboard } from '../utils/format';
 
 export default function WalletDetail() {
@@ -21,6 +22,7 @@ export default function WalletDetail() {
   const [addressCopied, setAddressCopied] = useState(false);
   const [descriptorCopied, setDescriptorCopied] = useState(false);
   const [showCreateUtxoModal, setShowCreateUtxoModal] = useState(false);
+  const [showIssueAssetModal, setShowIssueAssetModal] = useState(false);
 
   useEffect(() => {
     if (name) {
@@ -145,12 +147,20 @@ export default function WalletDetail() {
 
       <div className="flex items-center justify-between">
         <h2 className="text-3xl font-bold text-gray-900 dark:text-white">💰 {name}</h2>
-        <button
-          onClick={() => setShowCreateUtxoModal(true)}
-          className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium"
-        >
-          ➕ Create UTXO
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowCreateUtxoModal(true)}
+            className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium"
+          >
+            ➕ Create UTXO
+          </button>
+          <button
+            onClick={() => setShowIssueAssetModal(true)}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white rounded-md transition-colors font-medium"
+          >
+            🪙 Issue Asset
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -276,6 +286,17 @@ export default function WalletDetail() {
         isOpen={showCreateUtxoModal}
         onClose={() => setShowCreateUtxoModal(false)}
         onSuccess={() => {
+          loadWalletData();
+        }}
+      />
+
+      <IssueAssetModal
+        walletName={name || ''}
+        unoccupiedUtxos={balance?.utxos.filter(u => !u.is_occupied) || []}
+        isOpen={showIssueAssetModal}
+        onClose={() => setShowIssueAssetModal(false)}
+        onSuccess={() => {
+          setShowIssueAssetModal(false);
           loadWalletData();
         }}
       />

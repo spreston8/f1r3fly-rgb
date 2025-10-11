@@ -522,6 +522,200 @@ All research objectives complete. Can now implement Phase 3A with high confidenc
 
 ---
 
+## RGB20 Asset Issuance
+
+### Reference Implementation (rgb-wallet)
+
+From `/rgb-wallet/backend/src/wallet/rgb.rs` (lines 379-494):
+
+**CLI Approach:**
+```rust
+pub fn issue_token(
+    &self,
+    wallet_name: &str,
+    token_name: &str,
+    ticker: &str,
+    supply: u64,
+    precision: &str,
+    seal_utxo: &str,  // "txid:vout" format
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    // 1. Generate YAML contract file
+    let yaml_content = self.generate_token_yaml(token_name, ticker, supply, precision, seal_utxo)?;
+    fs::write(&contract_path, yaml_content)?;
+    
+    // 2. Issue via RGB CLI
+    let issue_result = Command::new(&self.rgb_binary_path)
+        .args([
+            "--network", "signet",
+            "-d", &data_path,
+            "issue", "-w", wallet_name, &contract_path
+        ])
+        .output()?;
+    
+    // 3. Extract contract ID from stdout
+    let contract_id = self.extract_contract_id(&issue_output)?;
+    
+    // 4. Create backup (for sharing/importing)
+    Command::new(&self.rgb_binary_path)
+        .args([
+            "--network", "signet",
+            "-d", &data_path,
+            "backup", &contract_id, &backup_path
+        ])
+        .output()?;
+    
+    Ok((contract_id, backup_filename))
+}
+```
+
+**YAML Template Structure:**
+```yaml
+consensus: bitcoin
+testnet: true
+issuer:
+  codexId: 7C15w3W1-L0T~zXw-Aeh5~kV-Zquz729-HXQFKQW-_5lX9O8  # RGB20-FNA schema ID
+  version: 0
+  checksum: AYkSrg
+name: TokenName
+method: issue
+timestamp: "2024-10-10T10:32:00+00:00"
+
+global:
+  - name: ticker
+    verified: TICK
+  - name: name
+    verified: Token Name
+  - name: precision
+    verified: centiMilli  # or: indivisible, deci, centi, milli, micro, nano, etc.
+  - name: issued
+    verified: 1000000
+
+owned:
+  - name: balance
+    seal: txid:vout  # Genesis UTXO
+    data: 1000000    # Initial allocation
+```
+
+---
+
+### Native Runtime Approach (Discovered)
+
+From research in `/rgb/examples/` and `/rgb-std/src/contract.rs`:
+
+**1. Load RGB20 Issuer (Schema)**
+```rust
+use rgb::Issuer;
+use std::convert::Infallible;
+
+// RGB20-FNA.issuer is the schema file (located at /rgb/examples/RGB20-FNA.issuer)
+let issuer = Issuer::load(
+    "path/to/RGB20-FNA.issuer",
+    |_, _, _| -> Result<_, Infallible> { Ok(()) }
+)?;
+
+// The codex_id from the issuer matches the YAML: 7C15w3W1-L0T~zXw-Aeh5~kV-Zquz729-HXQFKQW-_5lX9O8
+let codex_id = issuer.codex_id();
+```
+
+**2. Create Contract Parameters**
+```rust
+use rgb::{CreateParams, Assignment, Outpoint};
+use strict_encoding::vname;
+use chrono::Utc;
+
+// Initialize params for Signet testnet
+let mut params = CreateParams::new_bitcoin_testnet(
+    issuer.codex_id(),
+    "TokenName"  // Contract name
+);
+
+// Add global state (immutable metadata)
+params = params
+    .with_global_verified("ticker", "TICK")
+    .with_global_verified("name", "Token Name")
+    .with_global_verified("precision", "centiMilli")  // String, not enum!
+    .with_global_verified("issued", 1_000_000u64);
+
+// Add owned state (initial allocation)
+let genesis_outpoint = Outpoint::from_str("txid:vout")?;
+params.push_owned_unlocked(
+    "balance",  // State name for RGB20 fungible tokens
+    Assignment::new_internal(genesis_outpoint, 1_000_000u64)
+);
+
+// Optional: Set timestamp
+params.timestamp = Some(Utc::now());
+```
+
+**3. Issue Contract**
+```rust
+use rgb_runtime::{Contracts, Runtime};
+
+// Load contracts (already done in RgbManager)
+let mut contracts = self.load_contracts()?;
+
+// Issue the contract (RGB runtime handles Bitcoin TX, anchoring, stash persistence)
+let contract_id = contracts.issue(params.transform(noise_engine))?;
+
+// Contract is now issued and stored in local stash!
+// The genesis UTXO is now "occupied" with the asset
+```
+
+---
+
+### Key Differences: CLI vs Native
+
+| Aspect | CLI Approach (rgb-wallet) | Native Approach (Our Implementation) |
+|--------|---------------------------|--------------------------------------|
+| **Schema Loading** | Automatic (via `import` command) | Manual (`Issuer::load()`) |
+| **Contract Definition** | YAML file | Rust `CreateParams` struct |
+| **Transaction Handling** | RGB CLI creates internally | RGB runtime creates internally |
+| **Output Parsing** | Parse stdout text | Direct Rust types |
+| **Error Handling** | Exit codes + stderr | Rust `Result` types |
+| **Backup** | Separate `backup` command | Call `consignment` methods |
+| **Flexibility** | Limited to YAML schema | Full programmatic control |
+| **Performance** | Process spawn overhead | Direct library calls |
+
+---
+
+### Precision Values Reference
+
+From RGB20 schema (observed in examples):
+
+| String Value | Decimal Places | Example |
+|--------------|----------------|---------|
+| `indivisible` | 0 | Whole units only (NFTs, shares) |
+| `deci` | 1 | 0.1 |
+| `centi` | 2 | 0.01 (like USD cents) |
+| `milli` | 3 | 0.001 |
+| `deciMilli` | 4 | 0.0001 |
+| `centiMilli` | 5 | 0.00001 |
+| `micro` | 6 | 0.000001 |
+| `deciMicro` | 7 | 0.0000001 |
+| `centiMicro` | 8 | 0.00000001 (like Bitcoin sats) |
+| `nano` | 9 | 0.000000001 |
+| `deciNano` | 10 | 0.0000000001 |
+
+**Note:** These are **string values**, not enums. Pass as `StrictVal` strings.
+
+---
+
+### Implementation Path for Our Wallet
+
+**Approach:** Use **native RGB runtime** (not CLI) for better integration, error handling, and performance.
+
+**Steps:**
+1. ✅ Copy `/rgb/examples/RGB20-FNA.issuer` to our wallet data directory
+2. ✅ Load issuer once at initialization (cache in `RgbManager`)
+3. ✅ Convert form inputs to `CreateParams`
+4. ✅ Call `contracts.issue()` 
+5. ✅ Return contract ID to frontend
+6. ✅ UTXO becomes "occupied" automatically (Phase 3 detects it)
+
+**Confidence: 9/10** - Native approach is cleaner and better integrated than spawning CLI process.
+
+---
+
 ## References
 
 **Key Source Files**:
@@ -530,6 +724,9 @@ All research objectives complete. Can now implement Phase 3A with high confidenc
 - `/rgb-std/src/popls/bp.rs` - Wallet state methods
 - `/rgb-std/src/contract.rs` - Data structure definitions
 - `/rgb/src/info.rs` - Contract metadata structures
+- `/rgb/examples/DemoToken.yaml` - Working RGB20 example
+- `/rgb/examples/RGB20-FNA.issuer` - RGB20 schema file
+- `/rgb-wallet/backend/src/wallet/rgb.rs` - CLI-based reference implementation
 
 **RGB Libraries**:
 - `rgb-runtime` (0.12.0-rc.3) - Main runtime
@@ -549,6 +746,7 @@ All research objectives complete. Can now implement Phase 3A with high confidenc
 | Contract Name Extraction | 9/10 ✅ | Clear from articles |
 | Ticker Extraction | 9/10 ✅ | **RESEARCH COMPLETE** |
 | Amount Parsing | 9/10 ✅ | **RESEARCH COMPLETE** |
+| **RGB20 Issuance** | **9/10 ✅** | **RESEARCH COMPLETE** |
 | Error Handling | 8/10 ✅ | Standard patterns |
 | Performance | 7/10 ⚠️ | Caching needed |
 

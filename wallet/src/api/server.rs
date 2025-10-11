@@ -30,6 +30,7 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
         .route("/api/wallet/:name/sync", post(handlers::sync_wallet_handler))
         .route("/api/wallet/:name/create-utxo", post(handlers::create_utxo_handler))
         .route("/api/wallet/:name/unlock-utxo", post(handlers::unlock_utxo_handler))
+        .route("/api/wallet/:name/issue-asset", post(handlers::issue_asset_handler))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

@@ -8,9 +8,9 @@ use chrono::Utc;
 use std::str::FromStr;
 
 pub struct WalletManager {
-    storage: Storage,
+    pub storage: Storage,
     balance_checker: BalanceChecker,
-    rgb_manager: RgbManager,
+    pub rgb_manager: RgbManager,
 }
 
 impl WalletManager {

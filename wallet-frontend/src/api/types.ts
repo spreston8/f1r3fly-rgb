@@ -89,6 +89,34 @@ export interface UnlockUtxoResponse {
   fee_sats: number;
 }
 
+export interface IssueAssetRequest {
+  name: string;           // 2-12 chars
+  ticker: string;         // 2-8 chars
+  precision: number;      // 0-10
+  supply: number;         // Total supply
+  genesis_utxo: string;   // "txid:vout"
+}
+
+export interface IssueAssetResponse {
+  contract_id: string;
+  genesis_seal: string;
+}
+
+// Precision options for RGB20 assets
+export const PRECISION_OPTIONS = [
+  { value: 0, label: 'Indivisible (0 decimals)', example: '1' },
+  { value: 2, label: 'Centi (2 decimals)', example: '0.01' },
+  { value: 8, label: 'CentiMicro (8 decimals - Like BTC)', example: '0.00000001' },
+  { value: 1, label: 'Deci (1 decimal)', example: '0.1' },
+  { value: 3, label: 'Milli (3 decimals)', example: '0.001' },
+  { value: 4, label: 'DeciMilli (4 decimals)', example: '0.0001' },
+  { value: 5, label: 'CentiMilli (5 decimals)', example: '0.00001' },
+  { value: 6, label: 'Micro (6 decimals)', example: '0.000001' },
+  { value: 7, label: 'DeciMicro (7 decimals)', example: '0.0000001' },
+  { value: 9, label: 'Nano (9 decimals)', example: '0.000000001' },
+  { value: 10, label: 'DeciNano (10 decimals)', example: '0.0000000001' },
+];
+
 // Error response type
 export interface ApiError {
   error: string;
