@@ -987,6 +987,657 @@ GET  /api/assets/{contract_id}/icon # Get asset icon
 
 ---
 
+## RGB Asset Transfer Flow
+
+This section documents the complete RGB asset transfer process as implemented in Bitlight, based on real-world usage and observations.
+
+---
+
+### Overview: Invoice-Based Transfer Model
+
+**Critical Difference from Bitcoin/Ethereum:**
+
+RGB does NOT use addresses for transfers. Instead, it uses **invoices** that encode the recipient's UTXO seal.
+
+| Traditional Model | RGB Model |
+|-------------------|-----------|
+| "Send to address bc1q..." | "Send to invoice rgb:invoice:..." |
+| Address is reusable | Invoice is single-use |
+| Sender picks destination | Recipient picks destination (UTXO) |
+| Public address | Blinded seal (private) |
+
+---
+
+### Transfer Prerequisites
+
+Before transferring RGB assets, both parties must:
+
+**Sender:**
+- ✅ Have RGB assets (occupied UTXO)
+- ✅ Have unoccupied UTXO for Bitcoin fees
+- ✅ Asset imported in wallet (contract known)
+
+**Recipient:**
+- ✅ Asset imported in wallet (contract ID)
+- ✅ Have unoccupied UTXO (for receiving)
+- ✅ Generate invoice with amount and seal
+
+---
+
+### Step 1: Import Asset (Contract ID)
+
+**Purpose:** Make your wallet aware of a specific RGB asset so you can track, receive, and send it.
+
+**Process:**
+1. User obtains contract ID (from issuer, registry, or consignment)
+2. User: "Import asset" → Enter contract ID
+3. Wallet queries local stash: Already have this contract?
+4. If not found: Request contract file (from sender/registry/backup)
+5. Wallet validates contract structure and schema
+6. Wallet imports into RGB runtime
+7. Wallet scans all UTXOs for this asset
+8. Displays balance (if any allocations found)
+
+**Result:** Wallet now tracks this asset and can generate invoices for it.
+
+---
+
+### Step 2: Generate Invoice (Recipient)
+
+**Scenario:** Alice wants to send you 100 F1R3FLY tokens
+
+**Your Steps (Recipient):**
+
+```
+1. Select asset in wallet
+   - Choose: F1R3FLY (from imported contracts)
+   
+2. Click "Receive" or "Generate Invoice"
+   
+3. Enter amount
+   - Amount: 100 F1R3FLY
+   - (Or leave blank for "any amount")
+   
+4. Wallet selects UTXO seal
+   - Automatically picks an unoccupied UTXO
+   - Or lets you manually select one
+   - This UTXO will receive the tokens
+   
+5. Wallet generates RGB Invoice
+   - Encodes: contract ID, amount, blinded seal, network
+   - Format: String like "rgb:invoice:abc123..."
+   - Contains payment instructions for sender
+   
+6. Copy invoice
+   - Display as: Text string, QR code, or both
+   - Share with sender via any channel (email, chat, etc.)
+```
+
+**Invoice Contents:**
+```
+RGB Invoice:
+├─ Contract ID: rgb:2dKvN8sP7qM...xL4Z9w (which asset)
+├─ Amount: 100 F1R3FLY (tokens requested)
+├─ Beneficiary seal: [BLINDED] (your UTXO, hidden from sender)
+├─ Network: signet (prevents wrong-network sends)
+└─ Expiration: [optional] (invoice valid until X)
+```
+
+**Why Blinded Seal?**
+- You selected UTXO: `xyz789...abc:1`
+- Invoice contains: `blind(xyz789...abc:1, random_secret)`
+- Sender sees: Cryptographic commitment (not your actual UTXO)
+- Privacy: Sender can't track your future transactions
+
+---
+
+### Step 3: Send Payment (Sender)
+
+**Scenario:** Alice received your invoice and wants to send 100 F1R3FLY
+
+**Alice's Steps:**
+
+```
+1. Open wallet → Select F1R3FLY asset
+   
+2. Click "Send"
+   
+3. Paste recipient's invoice
+   - Wallet parses invoice automatically
+   
+4. Review transfer details (Bitlight UI):
+   ┌─────────────────────────────────────────┐
+   │ Send RGB assets                         │
+   │                                         │
+   │ Name: F1r3flyTest1                      │
+   │ Iface: RGB20                            │
+   │ Contract ID: contract:EHK...hXl0zI      │
+   │                                         │
+   │ Amount:                                 │
+   │   Available: 90 FTST1                   │
+   │   Sending: 10 FTST1                     │
+   │                                         │
+   │ Min Locked Amount: 5,000 sats 🔒       │
+   │   (Bitcoin value stays with your change)│
+   │                                         │
+   │ Add UTXO Balance:                       │
+   │   Move BTC to pre-fund UTXO for fees   │
+   │   [Checks for unoccupied fee UTXO]     │
+   │                                         │
+   │ Fee: ~200 sats                          │
+   │                                         │
+   │        [ Approve Payment ]              │
+   └─────────────────────────────────────────┘
+   
+5. Click "Approve Payment"
+   
+6. Wallet creates RGB state transition:
+   - Input: Alice's occupied UTXO (90 FTST1 + 5,000 sats)
+   - Output 1: Recipient seal (10 FTST1 + ??? sats)
+   - Output 2: Alice's change (80 FTST1 + 5,000 sats)
+   - Output 3: Fee UTXO (if needed)
+   
+7. Wallet creates Bitcoin transaction:
+   - Spends Alice's occupied UTXO
+   - Creates outputs matching RGB state transition
+   - Signs transaction
+   
+8. Wallet generates Consignment:
+   - Complete asset history (back to genesis)
+   - State transition proof
+   - Bitcoin anchoring commitments
+   - Validation data
+   
+9. Wallet broadcasts Bitcoin TX to network
+   
+10. Bitlight backend (automatic):
+    - Uploads consignment to relay server
+    - Notifies recipient's wallet
+    - No manual file sharing needed!
+```
+
+**What Happens to Sender's Balance:**
+
+```
+BEFORE "Approve Payment":
+Available: 90 FTST1
+Unconfirmed: 0 FTST1
+
+IMMEDIATELY AFTER "Approve Payment":
+Available: 0 FTST1        ← Old UTXO spent!
+Unconfirmed: 80 FTST1     ← Change UTXO pending
+
+AFTER BITCOIN CONFIRMATION (~10 min):
+Available: 80 FTST1       ← Change UTXO confirmed
+Unconfirmed: 0 FTST1
+```
+
+**Why Balance Shows Zero:**
+- Old UTXO (90 FTST1) is SPENT (gone from wallet)
+- New change UTXO (80 FTST1) is UNCONFIRMED (not counted yet)
+- RGB wallets only count confirmed UTXOs for safety
+- This is temporary (resolves after Bitcoin confirmation)
+
+---
+
+### Step 4: Receive & Validate (Recipient)
+
+**Recipient's Experience:**
+
+```
+1. Bitlight wallet receives notification
+   - Push alert or in-app notification
+   - "Incoming transfer: 10 FTST1"
+   
+2. Wallet auto-downloads consignment
+   - From Bitlight relay server
+   - No manual import needed
+   
+3. Wallet validates consignment:
+   ✓ Contract ID matches expected asset
+   ✓ Amount matches invoice (10 FTST1)
+   ✓ All state transitions are valid
+   ✓ Complete history back to genesis
+   ✓ Bitcoin transaction exists (on-chain or mempool)
+   ✓ Beneficiary seal matches invoice
+   
+4. WHILE BITCOIN TX IS PENDING:
+   ┌─────────────────────────────────────────┐
+   │ Activity                                │
+   │                                         │
+   │ 10/11/2025                              │
+   │ Receiving                               │
+   │ tx: 7a70...b9cb                         │
+   │ 10 FTST1                                │
+   │ Status: Pending ⏳                      │
+   │ [Link to mempool.space]                 │
+   └─────────────────────────────────────────┘
+   
+   Balance: 0 FTST1 (still waiting)
+   
+5. AFTER BITCOIN TX CONFIRMS:
+   ✓ Wallet accepts state transition
+   ✓ Updates local RGB stash
+   ✓ UTXO from invoice is now "occupied"
+   ✓ Balance updated: +10 FTST1
+   
+   ┌─────────────────────────────────────────┐
+   │ Activity                                │
+   │                                         │
+   │ 10/11/2025                              │
+   │ Received ✓                              │
+   │ tx: 7a70...b9cb                         │
+   │ 10 FTST1                                │
+   │ Status: Confirmed                       │
+   └─────────────────────────────────────────┘
+   
+   Balance: 10 FTST1 (available)
+```
+
+---
+
+### Complete Transfer Timeline
+
+```
+T = 0:00 - Recipient generates invoice
+├─ Picks unoccupied UTXO for receiving
+├─ Blinds the seal for privacy
+└─ Shares invoice with sender
+
+T = 0:30 - Sender pastes invoice
+├─ Wallet parses and validates
+├─ Shows transfer preview
+└─ Sender clicks "Approve"
+
+T = 0:31 - Transaction created
+├─ Bitcoin TX: Spends sender's occupied UTXO
+├─ RGB consignment: Generated
+├─ Bitlight relay: Uploads consignment
+└─ Bitcoin network: TX broadcast to mempool
+
+T = 0:32 - Both parties see "Pending"
+├─ Sender balance: 0 FTST1 (old spent, new unconfirmed)
+├─ Recipient balance: 0 FTST1 (waiting for confirmation)
+└─ Bitlight has notified recipient
+
+T = 10:00 - Bitcoin block confirmation
+├─ Bitcoin TX: Included in block #2,500,123
+├─ Sender change UTXO: Now confirmed (80 FTST1)
+├─ Recipient UTXO: Now confirmed + occupied (10 FTST1)
+└─ Both wallets update to "Confirmed"
+
+T = 10:01 - Transfer complete
+├─ Sender: 80 FTST1 (available for next send)
+├─ Recipient: 10 FTST1 (available for next send)
+└─ Both can generate new invoices
+```
+
+---
+
+### Key Field Explanations
+
+#### "Min Locked Amount" 🔒
+
+**What you see:** Slider (disabled) showing sats amount
+
+**What it means:** The Bitcoin value tied to your RGB asset UTXO
+
+```
+Your Occupied UTXO:
+┌──────────────────────────────┐
+│ Outpoint: abc123...xyz:0     │
+│ Bitcoin: 5,000 sats          │ ← Min Locked Amount
+│ RGB: 90 FTST1                │
+└──────────────────────────────┘
+
+After sending 10 FTST1:
+┌──────────────────────────────┐
+│ Your Change UTXO (NEW)       │
+│ Outpoint: def456...uvw:1     │
+│ Bitcoin: 5,000 sats          │ ← PRESERVED
+│ RGB: 80 FTST1                │
+└──────────────────────────────┘
+```
+
+**Why it exists:**
+- RGB assets need Bitcoin backing for future transactions
+- The sats pay for future transaction fees
+- Prevents creating unusable "dust" UTXOs
+
+**Why you can't change it:**
+- Source UTXO only has 5,000 sats (can't give more)
+- Must maintain minimum viable amount (dust limit)
+- Bitlight protects you from creating unspendable UTXOs
+
+---
+
+#### "Add UTXO Balance"
+
+**What you see:** "Move BTC to pre-fund UTXO for RGB20 transaction fees"
+
+**What it means:** Check for unoccupied UTXO to pay Bitcoin network fee
+
+**The problem it solves:**
+
+RGB transfer creates multiple outputs:
+1. Recipient UTXO (10 FTST1) - OCCUPIED
+2. Your change UTXO (80 FTST1) - OCCUPIED
+3. Fee payment UTXO - MUST BE UNOCCUPIED
+
+If all your UTXOs are occupied, you're stuck! Can't pay fees.
+
+**What Bitlight does:**
+1. Checks: Do you have unoccupied UTXO with enough BTC?
+2. If YES: Uses it for fee payment ✓
+3. If NO: Offers to create one (via "Create UTXO" feature)
+4. You must have fee UTXO before transfer completes
+
+**Analogy:**
+```
+RGB tokens: Gift card (occupied UTXO)
+Bitcoin for fees: Cash in wallet (unoccupied UTXO)
+
+You need BOTH to complete checkout!
+```
+
+---
+
+### Bitlight's Automatic Consignment Handling
+
+**What makes Bitlight special:**
+
+Traditional RGB wallets require **manual consignment sharing**:
+```
+1. Sender: Generate consignment → Save .rgb file
+2. Sender: Email/upload file to recipient
+3. Recipient: Download .rgb file
+4. Recipient: Import into wallet
+5. Recipient: Validate and accept
+```
+
+Bitlight automates this via **relay service**:
+```
+1. Sender: Click "Approve Payment"
+2. Bitlight backend: Handles everything
+3. Recipient: Notification appears
+4. Recipient: See "Pending" automatically
+5. Both: No file management needed
+```
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────┐
+│              Bitlight Backend Relay Service              │
+│                                                          │
+│  Sender Wallet ──[Upload Consignment]──> RGB Relay      │
+│                                              │           │
+│                                              v           │
+│                                        [Store + Notify]  │
+│                                              │           │
+│  Recipient Wallet <──[Auto-download]─────────┘          │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Trade-offs:**
+
+✅ **Pros:**
+- Seamless UX (feels like Venmo/Cash App)
+- Real-time notifications
+- No file management
+- Works great for Bitlight-to-Bitlight
+
+❌ **Cons:**
+- Centralized (depends on Bitlight server)
+- Privacy reduced (Bitlight sees all transfers)
+- Doesn't work cross-wallet (other RGB wallets can't auto-receive)
+- Single point of failure (if server down)
+
+**Fallback:**
+- If Bitlight server fails, consignment can be regenerated
+- Can be shared manually via any channel
+- Bitcoin TX is already on-chain (irreversible)
+- Pure RGB protocol still works
+
+---
+
+### Blinded Seals (Privacy Feature)
+
+**What you experienced:** Sender doesn't see recipient's address/UTXO
+
+**How it works:**
+
+When recipient creates invoice:
+```
+1. Wallet selects UTXO: xyz789...abc:1
+2. Generates random secret: s = random()
+3. Blinds the seal: B = commit(xyz789...abc:1, s)
+4. Invoice contains: B (blinded commitment)
+5. Recipient stores: (UTXO, s) privately
+```
+
+When sender uses invoice:
+```
+1. Sender wallet sees: B (cannot reverse to actual UTXO)
+2. Creates RGB state to: B (blinded recipient)
+3. Creates Bitcoin TX with outputs
+4. During finalization: Seal is "revealed" (unblinded)
+5. But sender UI never shows actual UTXO
+```
+
+**Privacy comparison:**
+
+| Method | Sender Knows | Chain Analysis Possible? |
+|--------|-------------|-------------------------|
+| **Bitcoin** | Recipient address (bc1q...) | ✓ Yes (track address) |
+| **Ethereum** | Recipient address (0x...) | ✓ Yes (track address) |
+| **RGB (blinded)** | Blinded commitment only | ✗ No (UTXO hidden) |
+
+**Exception:**
+- Bitcoin transaction is public (on-chain)
+- Anyone can see output addresses
+- But can't tell WHICH output holds RGB assets
+- RGB state mapping is off-chain (private)
+
+---
+
+### Transfer Requirements Summary
+
+**Before you can send:**
+- ✅ Have RGB assets (in occupied UTXO)
+- ✅ Have unoccupied UTXO for fees
+- ✅ Asset imported in wallet
+- ✅ Recipient provides valid invoice
+
+**Before you can receive:**
+- ✅ Have unoccupied UTXO (for receiving assets)
+- ✅ Asset imported in wallet (know contract ID)
+- ✅ Generate invoice with correct amount
+
+**After transfer completes:**
+- ✅ Sender: Has change in new UTXO (if any)
+- ✅ Recipient: Has assets in UTXO from invoice
+- ✅ Both: Bitcoin values preserved (minus network fee)
+- ✅ Both: Can immediately transfer again
+
+---
+
+### Activity Tab Display
+
+**Sender's Activity:**
+```
+┌─────────────────────────────────────────┐
+│ F1R3FLYTEST1                            │
+│ Available: 80 FTST1                     │
+│ Unconfirmed: 0 FTST1                    │
+│                                         │
+│ Activity:                               │
+│ ┌─────────────────────────────────────┐ │
+│ │ 10/11/2025                          │ │
+│ │ Sent                                │ │
+│ │ tx: 7a70...b9cb                     │ │
+│ │ 10 FTST1                            │ │
+│ │ Status: Confirmed ✓                 │ │
+│ └─────────────────────────────────────┘ │
+│                                         │
+│ ┌─────────────────────────────────────┐ │
+│ │ 09/23/2025                          │ │
+│ │ Received                            │ │
+│ │ tx: 0fb3...4677                     │ │
+│ │ 90 FTST1                            │ │
+│ │ Status: Confirmed ✓                 │ │
+│ └─────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+```
+
+**Recipient's Activity:**
+```
+┌─────────────────────────────────────────┐
+│ F1R3FLYTEST1                            │
+│ Available: 10 FTST1                     │
+│ Unconfirmed: 0 FTST1                    │
+│                                         │
+│ Activity:                               │
+│ ┌─────────────────────────────────────┐ │
+│ │ 10/11/2025                          │ │
+│ │ Received                            │ │
+│ │ tx: 7a70...b9cb                     │ │
+│ │ 10 FTST1                            │ │
+│ │ Status: Confirmed ✓                 │ │
+│ └─────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+```
+
+**"Send Details" Modal:**
+```
+┌─────────────────────────────────────────┐
+│ Send Details                            │
+│                                         │
+│ Transaction amount: 10 FTST1            │
+│ Broadcast status: Broadcast Pending     │
+│ Recipient's invoice: rgb:invoice:...    │
+│ Time: 2025-10-11T22:30:18.755787Z       │
+│                                         │
+│ Bitcoin TX: 7a70...b9cb                 │
+│ [View on Mempool.space]                 │
+└─────────────────────────────────────────┘
+```
+
+---
+
+### Comparison: Bitlight vs Pure RGB Protocol
+
+| Aspect | Pure RGB (Standard Protocol) | Bitlight Wallet |
+|--------|------------------------------|-----------------|
+| **Consignment Delivery** | Manual (email/IPFS/any channel) | Automatic (relay server) |
+| **User Action** | Export → Share → Import | Just "Approve Payment" |
+| **Recipient Notification** | Manual ("Check your email") | Automatic (push alert) |
+| **Cross-Wallet** | Universal (works with any RGB wallet) | Optimal for Bitlight-to-Bitlight |
+| **Decentralization** | Fully decentralized (no intermediary) | Centralized relay (convenience) |
+| **Privacy from Provider** | Full (provider doesn't see transfers) | Reduced (Bitlight sees metadata) |
+| **File Management** | Required (.rgb files) | Hidden (automatic) |
+| **Learning Curve** | High (understand consignments) | Low (feels like normal app) |
+| **Single Point of Failure** | None (peer-to-peer) | Bitlight server (if down) |
+| **Fallback Option** | N/A (already manual) | Can export/share consignment manually |
+
+**Bitlight's Design Philosophy:**
+- Prioritize UX over pure decentralization
+- Similar to Lightning wallets (hide channel management)
+- Similar to MetaMask (hide node infrastructure)
+- Make RGB usable for mainstream users
+- Keep protocol compatibility (can fall back to manual)
+
+---
+
+### Common Transfer Issues & Solutions
+
+#### Issue 1: "Insufficient Funds" Error
+
+**Problem:** Trying to send more tokens than you have
+
+**Solution:**
+- Check balance in wallet
+- Remember unconfirmed tokens don't count
+- Wait for previous transactions to confirm
+
+---
+
+#### Issue 2: "No Fee UTXO Available"
+
+**Problem:** All UTXOs are occupied, can't pay Bitcoin fee
+
+**Solution:**
+- Use "Create UTXO" feature
+- Create unoccupied UTXO with ~30,000 sats
+- Wait for confirmation, then retry transfer
+
+---
+
+#### Issue 3: Balance Shows Zero After Sending
+
+**Problem:** Old UTXO spent, new change UTXO unconfirmed
+
+**Solution:**
+- This is normal! Just temporary
+- Check "Unconfirmed" field (shows your change)
+- Wait ~10 minutes for Bitcoin confirmation
+- Balance will update automatically
+
+---
+
+#### Issue 4: "Transfer Pending" for Hours
+
+**Problem:** Bitcoin transaction not confirmed
+
+**Possible causes:**
+- Low fee rate (tx stuck in mempool)
+- Network congestion (many pending txs)
+- Miner's mempool full (tx not propagated)
+
+**Solution:**
+- Check mempool.space for tx status
+- Wait for next block (usually 10 min average)
+- If urgent: Use RBF (Replace-By-Fee) if supported
+- If very stuck: Contact Bitlight support
+
+---
+
+#### Issue 5: "Invalid Invoice" Error
+
+**Problem:** Invoice expired, wrong network, or wrong asset
+
+**Solution:**
+- Request new invoice from recipient
+- Verify network matches (Signet/Testnet/Mainnet)
+- Verify contract ID matches asset you want to send
+- Check invoice hasn't been used already
+
+---
+
+### Security Best Practices
+
+**For Senders:**
+1. ✅ Always verify invoice contract ID matches expected asset
+2. ✅ Double-check amount before approving
+3. ✅ Use invoices only once (don't reuse old ones)
+4. ✅ Keep unoccupied UTXOs for fees
+5. ✅ Wait for confirmations before considering transfer "done"
+
+**For Recipients:**
+1. ✅ Only share invoices with intended sender
+2. ✅ Generate fresh invoice for each receive
+3. ✅ Verify consignment before accepting (wallet does this)
+4. ✅ Wait for Bitcoin confirmation before trusting balance
+5. ✅ Don't reuse UTXOs from invoices for other purposes
+
+**General:**
+1. ✅ Contract ID is the source of truth (not ticker)
+2. ✅ Always validate consignments (wallet does automatically)
+3. ✅ Keep backups of consignment files (if manual sharing)
+4. ✅ Understand Bitcoin TX fees affect RGB transfers
+5. ✅ Monitor both RGB balance and Bitcoin UTXO state
+
+---
+
 ## Summary: Bitlight Wallet Analysis
 
 **Key Takeaways:**

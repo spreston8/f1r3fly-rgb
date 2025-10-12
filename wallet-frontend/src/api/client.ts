@@ -7,7 +7,7 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000,
+  timeout: 90000, // 90 seconds - allows time for RGB runtime blockchain sync
 });
 
 // Add response interceptor for error handling

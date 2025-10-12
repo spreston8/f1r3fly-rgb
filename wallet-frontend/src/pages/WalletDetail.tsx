@@ -7,6 +7,7 @@ import AddressList from '../components/AddressList';
 import UTXOList from '../components/UTXOList';
 import CreateUtxoModal from '../components/CreateUtxoModal';
 import IssueAssetModal from '../components/IssueAssetModal';
+import GenerateInvoiceModal from '../components/GenerateInvoiceModal';
 import { copyToClipboard } from '../utils/format';
 
 export default function WalletDetail() {
@@ -23,6 +24,8 @@ export default function WalletDetail() {
   const [descriptorCopied, setDescriptorCopied] = useState(false);
   const [showCreateUtxoModal, setShowCreateUtxoModal] = useState(false);
   const [showIssueAssetModal, setShowIssueAssetModal] = useState(false);
+  const [showGenerateInvoiceModal, setShowGenerateInvoiceModal] = useState(false);
+  const [selectedAsset, setSelectedAsset] = useState<{ contractId: string; ticker: string } | null>(null);
 
   useEffect(() => {
     if (name) {
@@ -177,6 +180,78 @@ export default function WalletDetail() {
         />
       )}
 
+      {/* RGB Assets Section */}
+      {balance && (() => {
+        // Extract unique RGB assets from all occupied UTXOs
+        const assetMap = new Map<string, { contractId: string; ticker: string; name: string; totalAmount: bigint }>();
+        
+        balance.utxos.forEach(utxo => {
+          if (utxo.is_occupied && utxo.bound_assets) {
+            utxo.bound_assets.forEach(asset => {
+              const existing = assetMap.get(asset.asset_id);
+              const amount = BigInt(asset.amount);
+              
+              if (existing) {
+                existing.totalAmount += amount;
+              } else {
+                assetMap.set(asset.asset_id, {
+                  contractId: asset.asset_id,
+                  ticker: asset.ticker,
+                  name: asset.asset_name,
+                  totalAmount: amount
+                });
+              }
+            });
+          }
+        });
+
+        const uniqueAssets = Array.from(assetMap.values());
+
+        if (uniqueAssets.length === 0) return null;
+
+        return (
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-900 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+              🪙 RGB Assets
+            </h3>
+            <div className="space-y-3">
+              {uniqueAssets.map((asset) => (
+                <div
+                  key={asset.contractId}
+                  className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-1 bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-300 text-xs font-semibold rounded">
+                        {asset.ticker}
+                      </span>
+                      <h4 className="font-medium text-gray-900 dark:text-white">
+                        {asset.name}
+                      </h4>
+                    </div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                      Balance: {asset.totalAmount.toString()}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 mt-1 font-mono">
+                      {asset.contractId}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSelectedAsset({ contractId: asset.contractId, ticker: asset.ticker });
+                      setShowGenerateInvoiceModal(true);
+                    }}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium text-sm"
+                  >
+                    📨 Receive
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {balance && balance.utxos.length > 0 && (
         <UTXOList 
           walletName={name || ''} 
@@ -300,6 +375,19 @@ export default function WalletDetail() {
           loadWalletData();
         }}
       />
+
+      {selectedAsset && (
+        <GenerateInvoiceModal
+          walletName={name || ''}
+          contractId={selectedAsset.contractId}
+          assetTicker={selectedAsset.ticker}
+          isOpen={showGenerateInvoiceModal}
+          onClose={() => {
+            setShowGenerateInvoiceModal(false);
+            setSelectedAsset(null);
+          }}
+        />
+      )}
     </div>
   );
 }

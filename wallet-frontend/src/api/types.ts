@@ -102,6 +102,18 @@ export interface IssueAssetResponse {
   genesis_seal: string;
 }
 
+export interface GenerateInvoiceRequest {
+  contract_id: string;
+  amount: number;  // Required (Backend is optional)
+}
+
+export interface GenerateInvoiceResponse {
+  invoice: string;
+  contract_id: string;
+  amount?: number;
+  seal_utxo: string;
+}
+
 // Precision options for RGB20 assets
 export const PRECISION_OPTIONS = [
   { value: 0, label: 'Indivisible (0 decimals)', example: '1' },

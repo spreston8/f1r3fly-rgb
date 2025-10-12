@@ -9,14 +9,18 @@ bitcoin = { version = "0.32", features = ["rand-std"] }
 bip39 = "2.0"
 
 # RGB libraries
-rgb = { package = "rgb-runtime", version = "0.12.0-rc.3", path = "../rgb" }
-rgb-std = { version = "0.12.0-rc.3", path = "../rgb-std" }
+rgbp = { package = "rgb-runtime", version = "0.12.0-rc.3", path = "../rgb", features = ["fs", "resolver-esplora"] }
+rgb = { package = "rgb-std", version = "0.12.0-rc.3", path = "../rgb-std" }
 rgb-persist-fs = { version = "0.12.0-rc.3", path = "../rgb-std/persistence/fs" }
+rgb_invoice = { package = "rgb-invoice", version = "0.12.0-rc.3", path = "../rgb-std/invoice", features = ["bitcoin"] }
 bpstd = { package = "bp-std", version = "0.12.0-rc.3", path = "../bp-std" }
+rgb_descriptors = { package = "rgb-descriptors", version = "0.12.0-rc.3", path = "../rgb/descriptors" }
 hypersonic = "0.12.0"
 amplify = "4.9.0"
 commit_verify = "0.12"
 strict_encoding = "2.9.1"
+strict_types = "2.9.0"
+toml = "0.8"
 
 # HTTP server
 axum = { version = "0.7", features = ["macros"] }

@@ -39,3 +39,16 @@ pub struct UnlockUtxoResponse {
     pub fee_sats: u64,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GenerateInvoiceRequest {
+    pub contract_id: String,
+    pub amount: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GenerateInvoiceResponse {
+    pub invoice: String,
+    pub contract_id: String,
+    pub amount: Option<u64>,
+    pub seal_utxo: String,
+}

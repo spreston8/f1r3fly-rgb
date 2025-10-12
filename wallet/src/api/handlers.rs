@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::wallet::manager::{AddressInfo, NextAddressInfo, SyncResult, WalletInfo, WalletManager, WalletMetadata};
 use crate::wallet::balance::BalanceInfo;
 use crate::wallet::rgb::{IssueAssetRequest, IssueAssetResponse};
-use super::types::{CreateWalletRequest, ImportWalletRequest, CreateUtxoRequest, CreateUtxoResponse, UnlockUtxoRequest, UnlockUtxoResponse};
+use super::types::{CreateWalletRequest, ImportWalletRequest, CreateUtxoRequest, CreateUtxoResponse, UnlockUtxoRequest, UnlockUtxoResponse, GenerateInvoiceRequest, GenerateInvoiceResponse};
 
 pub async fn create_wallet_handler(
     State(manager): State<Arc<WalletManager>>,
@@ -132,3 +132,23 @@ pub async fn issue_asset_handler(
     Ok(Json(result))
 }
 
+pub async fn generate_invoice_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(name): Path<String>,
+    Json(req): Json<GenerateInvoiceRequest>,
+) -> Result<Json<GenerateInvoiceResponse>, crate::error::WalletError> {
+    // Generate invoice
+    let result = manager.generate_rgb_invoice(&name, 
+        crate::wallet::manager::GenerateInvoiceRequest {
+            contract_id: req.contract_id.clone(),
+            amount: req.amount,
+        }
+    ).await?;
+    
+    Ok(Json(GenerateInvoiceResponse {
+        invoice: result.invoice,
+        contract_id: result.contract_id,
+        amount: result.amount,
+        seal_utxo: result.seal_utxo,
+    }))
+}

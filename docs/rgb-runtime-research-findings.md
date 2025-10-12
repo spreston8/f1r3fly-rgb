@@ -752,3 +752,588 @@ From RGB20 schema (observed in examples):
 
 **Overall Confidence: 9.5/10** (Very high confidence, ready to implement!)
 
+---
+
+## RGB Asset Transfers (Full Runtime Approach)
+
+### Research Date: October 11, 2025
+
+### Discovery Source
+Deep-dive analysis of `/rgb/cli/src/args.rs`, `/rgb/src/runtime.rs`, `/rgb/src/owner.rs`, and actual CLI transfer commands.
+
+---
+
+### RGB Runtime Architecture
+
+#### Component Hierarchy
+
+```
+RgbRuntime (RgbpRuntimeDir)
+    │
+    ├─> RgbWallet
+    │   ├─> Owner (WalletProvider)
+    │   │   ├─> FileHolder (OwnerProvider)
+    │   │   │   ├─> RgbDescr (descriptor)
+    │   │   │   └─> MemUtxos (UTXO set)
+    │   │   └─> MultiResolver (blockchain resolver)
+    │   │
+    │   └─> Contracts<StockpileDir>
+    │       ├─> Issuers (schema collection)
+    │       └─> Contracts (asset collection)
+    │
+    └─> Transfer Methods
+        ├─> pay_invoice()
+        ├─> consume_from_file()
+        └─> update() (sync)
+```
+
+---
+
+### 1. FileHolder Component
+
+**Location**: `/rgb/src/owner.rs` lines 596-678
+
+**Purpose**: Persist wallet descriptor and UTXO set to disk
+
+**File Structure**:
+```
+./wallets/{name}/rgb_wallet/
+  ├── descriptor.toml    # RgbDescr (WPKH descriptor + noise)
+  └── utxo.toml          # MemUtxos (tracked UTXOs with derivation)
+```
+
+**Key Methods**:
+```rust
+FileHolder::create(path: PathBuf, descriptor: RgbDescr) -> io::Result<Self>
+FileHolder::load(path: PathBuf) -> io::Result<Self>
+FileHolder::save(&self) -> io::Result<()>  // Auto-save on drop
+```
+
+**RgbDescr Structure**:
+```rust
+pub struct RgbDescr<K = XpubDerivable> {
+    pub wpkh: Option<Wpkh<K>>,      // P2WPKH descriptor (our mode)
+    pub tapret: Option<Tapret<K>>,  // Taproot descriptor (RGB-specific)
+    pub noise: [u8; 32],            // Chain code for blinding
+}
+```
+
+**Conversion from our descriptor**:
+```rust
+// Our format: [c0a1b2c3/84h/1h/0h]tpubDC.../<0;1>/*
+// To RGB format:
+let xpub = XpubDerivable::from_str(descriptor)?;
+let noise = xpub.xpub().chain_code().to_byte_array();
+let rgb_descr = RgbDescr::new_unfunded(Wpkh::from(xpub), noise);
+```
+
+**MemUtxos Structure**:
+```rust
+pub struct MemUtxos {
+    utxos: BTreeMap<Outpoint, UtxoInfo>,
+}
+
+pub struct UtxoInfo {
+    pub derivation: Vec<ChildNumber>,  // e.g., [0, 5] for m/0/5
+    pub amount: Sats,
+    pub status: UtxoStatus,  // Confirmed, Mempool, Spent
+}
+```
+
+**Challenge**: We fetch UTXOs on-demand from Esplora, but RGB needs them tracked in `MemUtxos`.
+
+**Solution**: Populate `MemUtxos` from our Esplora data before RGB operations.
+
+---
+
+### 2. Owner Component
+
+**Location**: `/rgb/src/owner.rs` lines 176-586
+
+**Purpose**: Combines descriptor + UTXOs + blockchain resolver
+
+**Structure**:
+```rust
+pub struct Owner<R, O, K, U>
+where
+    R: Resolver,              // MultiResolver (Esplora/Electrum)
+    O: OwnerProvider,         // FileHolder
+    K: DeriveSet,             // XpubDerivable
+    U: UtxoSet,               // MemUtxos
+{
+    network: Network,
+    provider: O,
+    resolver: R,
+    _phantom: PhantomData<(K, U)>,
+}
+```
+
+**Creation**:
+```rust
+Owner::with_components(network, hodler, resolver)
+```
+
+**What it provides**:
+- Address derivation: `next_address()`
+- Key derivation for signing
+- UTXO tracking: `has_utxo(outpoint)`
+- Descriptor access: `descriptor()`
+
+---
+
+### 3. MultiResolver Component
+
+**Location**: `/rgb/cli/src/args.rs` lines 172-180
+
+**Purpose**: Abstract blockchain data access
+
+**Creation**:
+```rust
+use rgbp::resolvers::MultiResolver;
+
+let resolver = MultiResolver::new_esplora("https://mempool.space/signet/api")?;
+// Or:
+let resolver = MultiResolver::new_electrum("ssl://electrum.blockstream.info:60002")?;
+```
+
+**What it provides**:
+- Transaction fetching
+- UTXO confirmation checking
+- Block height queries
+
+**Integration with our wallet**: We already have Esplora integration - just need to wrap it in `MultiResolver`.
+
+---
+
+### 4. RgbWallet Component
+
+**Location**: `rgb-std/src/popls/bp.rs`
+
+**Purpose**: High-level RGB operations
+
+**Structure**:
+```rust
+pub struct RgbWallet<W, Sp, S, C>
+where
+    W: WalletProvider,        // Owner
+    Sp: Stockpile,            // StockpileDir
+    S: KeyedCollection<CodexId, Issuer>,
+    C: KeyedCollection<ContractId, Contract>,
+{
+    pub wallet: W,
+    pub contracts: Contracts<Sp, S, C>,
+}
+```
+
+**Key Methods for Transfers**:
+
+**1. Generate Invoice (Recipient)**:
+```rust
+// Get seal from existing UTXO
+let auth = runtime.auth_token(nonce)
+    .ok_or("No unspent outputs available")?;
+let beneficiary = RgbBeneficiary::Token(auth);
+
+// Or witness-out based seal
+let wout = runtime.wout(nonce);
+let beneficiary = RgbBeneficiary::WitnessOut(wout);
+
+// Create invoice
+let invoice = RgbInvoice::new(
+    CallScope::ContractId(contract_id),
+    Consensus::Bitcoin,
+    true,  // testnet
+    beneficiary,
+    Some(StrictVal::num(amount)),
+);
+
+// Invoice string: "contract:bitcoin:rgb:abc123.../balance/100@wout:..."
+```
+
+**2. Send Payment (Sender)**:
+```rust
+// Parse invoice
+let invoice = RgbInvoice::from_str(invoice_str)?;
+
+// Create payment (PSBT + RGB state)
+let (mut psbt, payment) = runtime.pay_invoice(
+    &invoice,
+    CoinselectStrategy::Accumulative,  // or Smallest
+    TxParams::with(fee_rate_sat_vb),
+    sats_giveaway,  // Bitcoin to give with RGB (for witness-out)
+)?;
+
+// payment.terminals contains RGB state transitions
+// payment.bundle contains prefab data for payjoin (optional)
+```
+
+**3. Generate Consignment (Sender)**:
+```rust
+// After broadcasting Bitcoin TX
+runtime.contracts.consign_to_file(
+    &consignment_path,
+    contract_id,  // From invoice.scope
+    payment.terminals,  // From pay_invoice result
+)?;
+```
+
+**4. Accept Consignment (Recipient)**:
+```rust
+runtime.consume_from_file(
+    true,  // allow_unknown: import new contracts
+    &consignment_path,
+    |hash, identity, sig| {
+        // Signature validator (can be no-op for testing)
+        Result::<_, Infallible>::Ok(())
+    },
+)?;
+```
+
+---
+
+### 5. RgbRuntime (RgbpRuntimeDir)
+
+**Location**: `/rgb/src/runtime.rs` lines 71-412
+
+**Purpose**: Convenience wrapper around `RgbWallet`
+
+**Type Alias**:
+```rust
+pub type RgbpRuntimeDir<R> = RgbRuntime<
+    Owner<R, FileHolder>,
+    StockpileDir<TxoSeal>
+>;
+```
+
+**Initialization (from CLI)**:
+```rust
+// 1. Create resolver
+let resolver = MultiResolver::new_esplora(url)?;
+
+// 2. Load FileHolder
+let hodler = FileHolder::load(wallet_path)?;
+
+// 3. Create Owner
+let owner = Owner::with_components(network, hodler, resolver);
+
+// 4. Load Contracts
+let stockpile = StockpileDir::load(data_dir, Consensus::Bitcoin, true)?;
+let contracts = Contracts::load(stockpile);
+
+// 5. Create RgbWallet
+let rgb_wallet = RgbWallet::with_components(owner, contracts);
+
+// 6. Wrap in RgbRuntime
+let mut runtime = RgbpRuntimeDir::from(rgb_wallet);
+
+// 7. Sync with blockchain
+runtime.update(min_confirmations)?;
+```
+
+**Additional Methods**:
+- `update(min_confirmations)` - Sync wallet with blockchain
+- `compose_psbt()` - Low-level PSBT construction
+- `color_psbt()` - Add RGB commitments to PSBT
+
+---
+
+### Complete Transfer Flow (Native APIs)
+
+#### Recipient: Generate Invoice
+
+```rust
+// 1. Initialize runtime
+let mut runtime = init_rgb_runtime(wallet_name)?;
+
+// 2. Get seal (from existing UTXO)
+let auth = runtime.auth_token(0)
+    .ok_or("No UTXOs available")?;
+
+// 3. Create invoice
+let invoice = RgbInvoice::new(
+    CallScope::ContractId(contract_id),
+    Consensus::Bitcoin,
+    true,
+    RgbBeneficiary::Token(auth),
+    Some(StrictVal::num(amount)),
+);
+
+// 4. Return invoice string
+Ok(invoice.to_string())
+```
+
+#### Sender: Send Payment
+
+```rust
+// 1. Parse invoice
+let invoice = RgbInvoice::from_str(invoice_str)?;
+
+// 2. Initialize runtime
+let mut runtime = init_rgb_runtime(wallet_name)?;
+
+// 3. Create payment
+let params = TxParams::with(fee_rate);
+let (mut psbt, payment) = runtime.pay_invoice(
+    &invoice,
+    CoinselectStrategy::Accumulative,
+    params,
+    Some(Sats::from_sats(1000)),  // Min locked amount
+)?;
+
+// 4. Sign PSBT (using our existing signing logic)
+let signed_psbt = sign_psbt_with_keys(&mut psbt, &xprv, &descriptor)?;
+
+// 5. Finalize PSBT
+signed_psbt.finalize(runtime.wallet.descriptor())?;
+
+// 6. Extract and broadcast Bitcoin TX
+let tx = signed_psbt.extract()?;
+broadcast_tx(&tx)?;
+
+// 7. Generate consignment
+let consignment_path = format!("consignment_{}_{}.consignment", 
+    invoice.scope, tx.txid());
+runtime.contracts.consign_to_file(
+    &consignment_path,
+    invoice.scope,
+    payment.terminals,
+)?;
+
+Ok(SendTransferResponse {
+    bitcoin_txid: tx.txid().to_string(),
+    consignment_path,
+})
+```
+
+#### Recipient: Accept Consignment
+
+```rust
+// 1. Initialize runtime
+let mut runtime = init_rgb_runtime(wallet_name)?;
+
+// 2. Validate and import consignment
+runtime.consume_from_file(
+    true,  // allow_unknown contracts
+    &consignment_file_path,
+    |_, _, _| Result::<_, Infallible>::Ok(()),
+)?;
+
+// 3. Parse consignment for metadata
+let consignment = Consignment::load(&consignment_file_path)?;
+let contract_id = consignment.contract_id();
+let bitcoin_txid = consignment.anchoring_txid();
+
+// 4. Check Bitcoin TX status
+let tx_status = check_tx_status(&bitcoin_txid)?;
+
+Ok(AcceptConsignmentResponse {
+    contract_id: contract_id.to_string(),
+    bitcoin_txid: bitcoin_txid.to_string(),
+    status: if tx_status.confirmed { "confirmed" } else { "pending" },
+})
+```
+
+---
+
+### Mapping to Our Existing Wallet
+
+| RGB Component | Our Equivalent | Integration Strategy |
+|---------------|----------------|----------------------|
+| **Descriptor (RgbDescr)** | `descriptor.txt` (string) | Convert string → `RgbDescr` |
+| **UTXO Tracking (MemUtxos)** | Esplora API (on-demand) | Populate `MemUtxos` from Esplora before ops |
+| **Mnemonic/Keys** | `mnemonic.txt` + BIP32 | Load for PSBT signing (already have) |
+| **RGB Data (StockpileDir)** | `./wallets/rgb_data/` | Already correct structure ✅ |
+| **Network** | `bpstd::Network::Signet` | Already compatible ✅ |
+| **Blockchain API** | Direct HTTP (Esplora) | Wrap in `MultiResolver` |
+| **Wallet Path** | `./wallets/{name}/` | Add `rgb_wallet/` subdirectory |
+
+---
+
+### Key Implementation Challenges
+
+#### Challenge 1: Descriptor Conversion
+
+**Problem**: We store descriptor as plain string, RGB needs `RgbDescr` struct.
+
+**Solution**:
+```rust
+fn descriptor_string_to_rgb(descriptor: &str) -> Result<RgbDescr, Error> {
+    let xpub = XpubDerivable::from_str(descriptor)?;
+    let noise = xpub.xpub().chain_code().to_byte_array();
+    Ok(RgbDescr::new_unfunded(Wpkh::from(xpub), noise))
+}
+```
+
+**Difficulty**: Low (straightforward API)
+
+---
+
+#### Challenge 2: MemUtxos Population
+
+**Problem**: RGB needs in-memory UTXO tracking with derivation paths.
+
+**Solution**:
+```rust
+async fn populate_mem_utxos(
+    descriptor: &str,
+    wallet_name: &str,
+) -> Result<MemUtxos, Error> {
+    let mut utxos = BTreeMap::new();
+    
+    // Fetch from Esplora
+    let addresses = derive_addresses(descriptor, 0..20)?;
+    
+    for (idx, address) in addresses.iter().enumerate() {
+        let esplora_utxos = fetch_utxos_from_esplora(address).await?;
+        
+        for utxo in esplora_utxos {
+            let outpoint = Outpoint::new(utxo.txid, Vout::from_u32(utxo.vout));
+            let info = UtxoInfo {
+                derivation: vec![
+                    ChildNumber::from_normal_idx(0).unwrap(),
+                    ChildNumber::from_normal_idx(idx as u32).unwrap(),
+                ],
+                amount: Sats::from_sats(utxo.value),
+                status: if utxo.status.confirmed {
+                    UtxoStatus::Confirmed
+                } else {
+                    UtxoStatus::Mempool
+                },
+            };
+            utxos.insert(outpoint, info);
+        }
+    }
+    
+    Ok(MemUtxos { utxos })
+}
+```
+
+**Difficulty**: Medium (requires tracking derivation paths)
+
+---
+
+#### Challenge 3: PSBT Signing Integration
+
+**Problem**: `pay_invoice()` returns unsigned PSBT, we need to sign with our keys.
+
+**Solution**: We already have PSBT signing! Just reuse it.
+
+```rust
+// From existing wallet/src/wallet/transaction.rs
+fn sign_psbt(
+    &self,
+    mut psbt: Psbt,
+    wallet_name: &str,
+) -> Result<Psbt, Error> {
+    let mnemonic = self.storage.load_mnemonic(wallet_name)?;
+    let xprv = derive_xprv_from_mnemonic(&mnemonic)?;
+    
+    // Sign each input (existing logic)
+    for (idx, input) in psbt.inputs.iter().enumerate() {
+        let signature = create_signature(&xprv, &psbt, idx)?;
+        psbt.inputs[idx].partial_sigs.insert(pubkey, signature);
+    }
+    
+    Ok(psbt)
+}
+```
+
+**Difficulty**: Low (reuse existing code)
+
+---
+
+#### Challenge 4: FileHolder Persistence
+
+**Problem**: RGB expects `descriptor.toml` and `utxo.toml` files.
+
+**Solution**: Create/update these files during RGB operations.
+
+```rust
+fn ensure_rgb_wallet_files(wallet_name: &str) -> Result<(), Error> {
+    let rgb_wallet_path = format!("./wallets/{}/rgb_wallet/", wallet_name);
+    fs::create_dir_all(&rgb_wallet_path)?;
+    
+    // Load our descriptor
+    let descriptor_str = load_descriptor(wallet_name)?;
+    let rgb_descr = descriptor_string_to_rgb(&descriptor_str)?;
+    
+    // Populate UTXOs
+    let mem_utxos = populate_mem_utxos(&descriptor_str, wallet_name).await?;
+    
+    // Create FileHolder (auto-saves to TOML)
+    FileHolder::create(PathBuf::from(rgb_wallet_path), rgb_descr)?;
+    
+    Ok(())
+}
+```
+
+**Difficulty**: Medium (file format conversion)
+
+---
+
+### Confidence Levels for Transfers
+
+| Component | Confidence | Notes |
+|-----------|-----------|-------|
+| **Invoice Generation** | 8/10 ✅ | API clear, need UTXO tracking |
+| **Payment Creation** | 7/10 ⚠️ | `pay_invoice()` API clear, but many params |
+| **PSBT Signing** | 9/10 ✅ | Already have signing logic |
+| **Consignment Generation** | 9/10 ✅ | Simple `consign_to_file()` call |
+| **Consignment Validation** | 9/10 ✅ | Simple `consume_from_file()` call |
+| **FileHolder Integration** | 7/10 ⚠️ | Need to manage TOML persistence |
+| **MemUtxos Population** | 7/10 ⚠️ | Derivation path tracking needed |
+| **MultiResolver Wrapper** | 9/10 ✅ | Just wrap our Esplora |
+| **Overall Transfer Flow** | 8/10 ✅ | High confidence, some integration work |
+
+---
+
+### Open Questions
+
+1. **AuthToken vs WitnessOut seals**: Which to use by default?
+   - **Answer**: Start with `AuthToken` (simpler, uses existing UTXOs)
+
+2. **Coinselect strategy**: Which strategy for RGB payments?
+   - **Answer**: Start with `Accumulative` (CLI default)
+
+3. **Sats giveaway**: How much Bitcoin to give with RGB?
+   - **Answer**: ~1000 sats (dust limit + buffer)
+
+4. **PSBT finalization**: Who finalizes the PSBT?
+   - **Answer**: We do, after signing (before extraction)
+
+5. **Consignment size**: How big are `.consignment` files?
+   - **Answer**: Varies (KB to MB), depends on contract history
+
+---
+
+### Next Steps
+
+1. ✅ Complete transfer flow research - **DONE**
+2. ✅ Document RGB Runtime architecture - **DONE**
+3. ✅ Map to existing wallet components - **DONE**
+4. 🚀 Create detailed implementation plan
+5. ⏭️ Begin implementation in phases
+
+---
+
+### Updated Confidence Levels
+
+| Component | Confidence | Status |
+|-----------|-----------|--------|
+| Runtime Initialization | 9/10 ✅ | Algorithm clear |
+| UTXO Occupation Check | 9/10 ✅ | Implementation ready |
+| Contract ID Extraction | 10/10 ✅ | Trivial |
+| Contract Name Extraction | 9/10 ✅ | Clear from articles |
+| Ticker Extraction | 9/10 ✅ | **RESEARCH COMPLETE** |
+| Amount Parsing | 9/10 ✅ | **RESEARCH COMPLETE** |
+| RGB20 Issuance | 9/10 ✅ | **RESEARCH COMPLETE** |
+| **Invoice Generation** | **8/10 ✅** | **RESEARCH COMPLETE** |
+| **Send Payment** | **8/10 ✅** | **RESEARCH COMPLETE** |
+| **Accept Consignment** | **9/10 ✅** | **RESEARCH COMPLETE** |
+| Error Handling | 8/10 ✅ | Standard patterns |
+| Performance | 7/10 ⚠️ | Caching needed |
+
+**Overall Confidence: 8.5/10** (High confidence for full transfer implementation!)
+
+---
+
