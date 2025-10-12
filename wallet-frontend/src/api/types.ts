@@ -114,6 +114,32 @@ export interface GenerateInvoiceResponse {
   seal_utxo: string;
 }
 
+export interface SendTransferRequest {
+  invoice: string;
+  fee_rate_sat_vb?: number;
+}
+
+export interface SendTransferResponse {
+  bitcoin_txid: string;
+  consignment_download_url: string;
+  consignment_filename: string;
+  status: string;
+}
+
+export interface AcceptConsignmentResponse {
+  contract_id: string;
+  status: string;  // "imported", "pending", or "confirmed"
+  import_type: string;  // "genesis", "transfer", or "unknown"
+  bitcoin_txid: string | null;
+}
+
+export interface ExportGenesisResponse {
+  contract_id: string;
+  consignment_filename: string;
+  file_size_bytes: number;
+  download_url: string;
+}
+
 // Precision options for RGB20 assets
 export const PRECISION_OPTIONS = [
   { value: 0, label: 'Indivisible (0 decimals)', example: '1' },

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::wallet::manager::{AddressInfo, NextAddressInfo, SyncResult, WalletInfo, WalletManager, WalletMetadata};
 use crate::wallet::balance::BalanceInfo;
 use crate::wallet::rgb::{IssueAssetRequest, IssueAssetResponse};
-use super::types::{CreateWalletRequest, ImportWalletRequest, CreateUtxoRequest, CreateUtxoResponse, UnlockUtxoRequest, UnlockUtxoResponse, GenerateInvoiceRequest, GenerateInvoiceResponse};
+use super::types::{CreateWalletRequest, ImportWalletRequest, CreateUtxoRequest, CreateUtxoResponse, UnlockUtxoRequest, UnlockUtxoResponse, GenerateInvoiceRequest, GenerateInvoiceResponse, SendTransferRequest, SendTransferResponse, AcceptConsignmentResponse, ExportGenesisResponse};
 
 pub async fn create_wallet_handler(
     State(manager): State<Arc<WalletManager>>,
@@ -151,4 +151,112 @@ pub async fn generate_invoice_handler(
         amount: result.amount,
         seal_utxo: result.seal_utxo,
     }))
+}
+
+pub async fn send_transfer_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(wallet_name): Path<String>,
+    Json(request): Json<SendTransferRequest>,
+) -> Result<Json<SendTransferResponse>, crate::error::WalletError> {
+    let result = manager.send_transfer(
+        &wallet_name,
+        &request.invoice,
+        request.fee_rate_sat_vb,
+    )?;
+    
+    Ok(Json(SendTransferResponse {
+        bitcoin_txid: result.bitcoin_txid,
+        consignment_download_url: result.consignment_download_url,
+        consignment_filename: result.consignment_filename,
+        status: result.status,
+    }))
+}
+
+pub async fn download_consignment_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(filename): Path<String>,
+) -> Result<axum::response::Response, crate::error::WalletError> {
+    use axum::response::IntoResponse;
+    use axum::http::{header, StatusCode};
+
+    let consignment_path = manager.storage.base_dir()
+        .join("consignments")
+        .join(&filename);
+
+    if !consignment_path.exists() {
+        return Err(crate::error::WalletError::Rgb(format!("Consignment file not found: {}", filename)));
+    }
+
+    let file_contents = std::fs::read(&consignment_path)
+        .map_err(|e| crate::error::WalletError::Internal(format!("Failed to read file: {}", e)))?;
+
+    let response = (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CONTENT_DISPOSITION, &format!("attachment; filename=\"{}\"", filename)),
+        ],
+        file_contents,
+    ).into_response();
+
+    Ok(response)
+}
+
+pub async fn accept_consignment_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(wallet_name): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Json<AcceptConsignmentResponse>, crate::error::WalletError> {
+    if !manager.storage.wallet_exists(&wallet_name) {
+        return Err(crate::error::WalletError::WalletNotFound(wallet_name));
+    }
+
+    let result = manager.accept_consignment(&wallet_name, body.to_vec())?;
+    Ok(Json(result))
+}
+
+pub async fn export_genesis_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path((wallet_name, contract_id)): Path<(String, String)>,
+) -> Result<Json<ExportGenesisResponse>, crate::error::WalletError> {
+    if !manager.storage.wallet_exists(&wallet_name) {
+        return Err(crate::error::WalletError::WalletNotFound(wallet_name));
+    }
+
+    let result = manager.export_genesis_consignment(&wallet_name, &contract_id)?;
+    Ok(Json(result))
+}
+
+pub async fn download_genesis_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(filename): Path<String>,
+) -> Result<axum::response::Response, crate::error::WalletError> {
+    use axum::response::IntoResponse;
+    use axum::http::{header, StatusCode};
+
+    let genesis_path = manager.storage.base_dir()
+        .join("exports")
+        .join(&filename);
+
+    if !genesis_path.exists() {
+        return Err(crate::error::WalletError::Rgb(
+            format!("Genesis file not found: {}", filename)
+        ));
+    }
+
+    let file_contents = std::fs::read(&genesis_path)
+        .map_err(|e| crate::error::WalletError::Internal(
+            format!("Failed to read genesis file: {}", e)
+        ))?;
+
+    let response = (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CONTENT_DISPOSITION, &format!("attachment; filename=\"{}\"", filename)),
+        ],
+        file_contents,
+    ).into_response();
+
+    Ok(response)
 }

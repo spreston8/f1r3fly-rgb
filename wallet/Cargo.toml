@@ -12,7 +12,8 @@ bip39 = "2.0"
 rgbp = { package = "rgb-runtime", version = "0.12.0-rc.3", path = "../rgb", features = ["fs", "resolver-esplora"] }
 rgb = { package = "rgb-std", version = "0.12.0-rc.3", path = "../rgb-std" }
 rgb-persist-fs = { version = "0.12.0-rc.3", path = "../rgb-std/persistence/fs" }
-rgb_invoice = { package = "rgb-invoice", version = "0.12.0-rc.3", path = "../rgb-std/invoice", features = ["bitcoin"] }
+rgb_invoice = { package = "rgb-invoice", version = "0.12.0-rc.3", path = "../rgb-std/invoice", features = ["bitcoin", "uri"] }
+sonic-callreq = "0.12.0"
 bpstd = { package = "bp-std", version = "0.12.0-rc.3", path = "../bp-std" }
 rgb_descriptors = { package = "rgb-descriptors", version = "0.12.0-rc.3", path = "../rgb/descriptors" }
 hypersonic = "0.12.0"
@@ -41,6 +42,7 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 opt-level = 3

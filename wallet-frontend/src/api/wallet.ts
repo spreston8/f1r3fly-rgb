@@ -16,6 +16,10 @@ import type {
   IssueAssetResponse,
   GenerateInvoiceRequest,
   GenerateInvoiceResponse,
+  SendTransferRequest,
+  SendTransferResponse,
+  AcceptConsignmentResponse,
+  ExportGenesisResponse,
 } from './types';
 
 export const walletApi = {
@@ -131,6 +135,52 @@ export const walletApi = {
     const response = await apiClient.post<GenerateInvoiceResponse>(
       `/wallet/${name}/generate-invoice`,
       request
+    );
+    return response.data;
+  },
+
+  /**
+   * Send RGB transfer using an invoice
+   */
+  sendTransfer: async (
+    name: string,
+    request: SendTransferRequest
+  ): Promise<SendTransferResponse> => {
+    const response = await apiClient.post<SendTransferResponse>(
+      `/wallet/${name}/send-transfer`,
+      request
+    );
+    return response.data;
+  },
+
+  /**
+   * Accept RGB consignment (genesis or transfer)
+   */
+  acceptConsignment: async (
+    name: string,
+    consignmentBytes: Uint8Array
+  ): Promise<AcceptConsignmentResponse> => {
+    const response = await apiClient.post<AcceptConsignmentResponse>(
+      `/wallet/${name}/accept-consignment`,
+      consignmentBytes,
+      {
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+      }
+    );
+    return response.data;
+  },
+
+  /**
+   * Export genesis consignment for same-wallet sync
+   */
+  exportGenesis: async (
+    name: string,
+    contractId: string
+  ): Promise<ExportGenesisResponse> => {
+    const response = await apiClient.get<ExportGenesisResponse>(
+      `/wallet/${name}/export-genesis/${contractId}`
     );
     return response.data;
   },

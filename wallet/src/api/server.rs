@@ -32,6 +32,11 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
         .route("/api/wallet/:name/unlock-utxo", post(handlers::unlock_utxo_handler))
         .route("/api/wallet/:name/issue-asset", post(handlers::issue_asset_handler))
         .route("/api/wallet/:name/generate-invoice", post(handlers::generate_invoice_handler))
+        .route("/api/wallet/:name/send-transfer", post(handlers::send_transfer_handler))
+        .route("/api/wallet/:name/accept-consignment", post(handlers::accept_consignment_handler))
+        .route("/api/wallet/:name/export-genesis/:contract_id", get(handlers::export_genesis_handler))
+        .route("/api/consignment/:filename", get(handlers::download_consignment_handler))
+        .route("/api/genesis/:filename", get(handlers::download_genesis_handler))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

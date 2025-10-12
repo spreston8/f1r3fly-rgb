@@ -6,4 +6,5 @@ pub mod manager;
 pub mod transaction;
 pub mod rgb;
 pub mod rgb_runtime;
+pub mod signer;
 

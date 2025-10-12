@@ -17,6 +17,7 @@ impl BalanceChecker {
     pub async fn get_address_utxos(
         &self,
         address: &Address,
+        address_index: u32,
     ) -> Result<Vec<UTXO>, crate::error::WalletError> {
         let url = format!("{}/address/{}/utxo", self.base_url, address);
         
@@ -58,6 +59,7 @@ impl BalanceChecker {
                     vout,
                     amount_sats,
                     address: address.to_string(),
+                    address_index,
                     confirmations,
                     is_occupied: false,
                     bound_assets: Vec::new(),
@@ -90,11 +92,11 @@ impl BalanceChecker {
 
     pub async fn calculate_balance(
         &self,
-        addresses: &[Address],
+        addresses_with_indices: &[(u32, Address)],
     ) -> Result<BalanceInfo, crate::error::WalletError> {
-        let futures: Vec<_> = addresses
+        let futures: Vec<_> = addresses_with_indices
             .iter()
-            .map(|address| {
+            .map(|(_, address)| {
                 let client = self.client.clone();
                 let base_url = self.base_url.clone();
                 let address_str = address.to_string();
@@ -142,8 +144,8 @@ impl BalanceChecker {
         let unconfirmed_sats: u64 = results.iter().map(|(_, unconfirmed)| unconfirmed).sum();
 
         let mut all_utxos = Vec::new();
-        for address in addresses {
-            if let Ok(utxos) = self.get_address_utxos(address).await {
+        for (index, address) in addresses_with_indices {
+            if let Ok(utxos) = self.get_address_utxos(address, *index).await {
                 all_utxos.extend(utxos);
             }
         }
@@ -163,6 +165,7 @@ pub struct UTXO {
     pub vout: u32,
     pub amount_sats: u64,
     pub address: String,
+    pub address_index: u32,
     pub confirmations: u32,
     /// Indicates if this UTXO has RGB assets bound to it
     pub is_occupied: bool,

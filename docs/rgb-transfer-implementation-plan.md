@@ -13,7 +13,9 @@
 3. [Phase 1: RGB Runtime Foundation](#phase-1-rgb-runtime-foundation)
 4. [Phase 2: Invoice Generation (Recipient)](#phase-2-invoice-generation-recipient)
 5. [Phase 3: Send Transfer (Sender)](#phase-3-send-transfer-sender)
-6. [Phase 4: Accept Consignment (Recipient)](#phase-4-accept-consignment-recipient)
+6. [Phase 4: Consignment Import/Export](#phase-4-consignment-importexport)
+   - [Phase 4A: Genesis Export/Import (Same Wallet Sync)](#phase-4a-genesis-exportimport-same-wallet-sync)
+   - [Phase 4B: Accept Consignment (Transfer & Genesis Import)](#phase-4b-accept-consignment-transfer--genesis-import)
 7. [Phase 5: Frontend Integration](#phase-5-frontend-integration)
 8. [Phase 6: Testing & Polish](#phase-6-testing--polish)
 9. [Timeline & Effort](#timeline--effort)
@@ -23,19 +25,22 @@
 ## Overview
 
 ### Goal
-Enable complete RGB asset transfers between wallets:
-- ✅ **Recipient** generates invoice (with blinded seal)
-- ✅ **Sender** sends payment (creates PSBT + consignment)
-- ✅ **Recipient** accepts consignment (validates + imports)
+Enable complete RGB asset management and transfers:
+- ✅ **Same Wallet Sync** - Export/import genesis consignment across devices (no Bitcoin TX)
+- ✅ **Transfer Between Wallets** - Full send/receive flow with consignments
+  - Recipient generates invoice (with blinded seal)
+  - Sender sends payment (creates PSBT + consignment)
+  - Recipient accepts consignment (validates + imports)
 
 ### Approach
 Use **RGB Runtime** (`RgbWallet` + `RgbpRuntimeDir`) for native library integration instead of CLI spawning.
 
 ### Key Deliverables
-1. Backend APIs for invoice/send/receive
-2. Frontend UI for transfer flow
-3. Manual consignment file sharing (download/upload)
-4. End-to-end tested transfer cycle
+1. Genesis export/import for same-wallet device sync
+2. Backend APIs for invoice/send/receive transfers
+3. Frontend UI for both genesis sync and transfer flows
+4. Manual consignment file sharing (download/upload)
+5. End-to-end tested transfer cycle
 
 ---
 
@@ -660,9 +665,17 @@ const [selectedContractId, setSelectedContractId] = useState<string | null>(null
 
 **Goal**: Sender can send RGB assets using an invoice
 
-**Duration**: 3-4 days
+**Duration**: 2-3 days *(Updated after deep research)*
 
-**Confidence**: 7/10
+**Confidence**: 8.5/10 *(Updated after deep research)*
+
+**Status**: ✅ Research Complete - Ready for Implementation
+
+**Key Research Findings** *(See `rgb-runtime-research-findings.md` Phase 3 section for details)*:
+- ✅ `pay_invoice()` already includes DBC commit (no separate `complete()` call needed)
+- ✅ Consignment must be generated **BEFORE** signing (not after broadcasting)
+- ✅ Use `Signer` trait for PSBT signing
+- ✅ Broadcasting is trivial: `format!("{:x}", tx)`
 
 ---
 
@@ -689,7 +702,7 @@ pub struct SendTransferResponse {
 
 **File**: `wallet/src/wallet/manager.rs`
 
-**Add method**:
+**Add method** *(Corrected workflow based on research)*:
 ```rust
 impl WalletManager {
     pub fn send_transfer(
@@ -706,8 +719,10 @@ impl WalletManager {
         let mut runtime = self.get_runtime(wallet_name)?;
         
         // 3. Create payment (PSBT + RGB state)
+        // NOTE: pay_invoice() internally calls complete() which does DBC commit
+        // The returned PSBT is ready for signing!
         use bpstd::psbt::TxParams;
-        use rgb::popls::bp::CoinselectStrategy;
+        use rgb::CoinselectStrategy;
         use bpstd::Sats;
         
         let params = TxParams::with(request.fee_rate_sat_vb.unwrap_or(2));
@@ -718,61 +733,71 @@ impl WalletManager {
             Some(Sats::from_sats(1000)),  // Min locked amount
         ).map_err(|e| crate::error::WalletError::Rgb(format!("Payment failed: {:?}", e)))?;
         
-        // 4. Sign PSBT (using our existing logic)
-        let mnemonic = self.storage.load_mnemonic(wallet_name)?;
-        let xprv = self.derive_xprv_from_mnemonic(&mnemonic)?;
-        self.sign_psbt(&mut psbt, &xprv)?;
-        
-        // 5. Finalize PSBT
-        psbt.finalize(runtime.wallet.descriptor())
-            .map_err(|e| crate::error::WalletError::Rgb(format!("Finalization failed: {:?}", e)))?;
-        
-        // 6. Extract and broadcast Bitcoin TX
-        let tx = psbt.extract()
-            .map_err(|e| crate::error::WalletError::Rgb(format!("Extraction failed: {:?}", e)))?;
-        
-        let txid = tx.txid();
-        self.broadcast_tx(&tx)?;
-        
-        // 7. Generate consignment
-        let consignment_filename = format!("consignment_{}_{}.consignment", 
-            invoice.scope, txid);
+        // 4. **GENERATE CONSIGNMENT FIRST** (before signing!)
+        // This is the correct RGB workflow - consignment doesn't depend on signatures
+        let consignment_filename = format!("transfer_{}_{}.rgb", 
+            invoice.scope, chrono::Utc::now().timestamp());
         let consignment_path = self.storage.base_dir()
-            .join("temp_consignments")
+            .join("consignments")
             .join(&consignment_filename);
         
         std::fs::create_dir_all(consignment_path.parent().unwrap())?;
         
         runtime.contracts.consign_to_file(
             &consignment_path,
-            invoice.scope,
-            payment.terminals,
+            invoice.scope,           // contract_id from invoice
+            payment.terminals,       // from Payment struct
         ).map_err(|e| crate::error::WalletError::Rgb(format!("Consignment failed: {:?}", e)))?;
+        
+        // 5. Sign PSBT using Signer trait
+        let signer = self.create_signer(wallet_name)?;
+        psbt.sign(&signer)
+            .map_err(|e| crate::error::WalletError::Bitcoin(format!("Signing failed: {:?}", e)))?;
+        
+        // 6. Finalize PSBT
+        psbt.finalize(runtime.wallet.descriptor());
+        
+        // 7. Extract signed transaction
+        let tx = psbt.extract()
+            .map_err(|e| crate::error::WalletError::Rgb(format!("Extraction failed: {:?}", e)))?;
+        let txid = tx.txid();
+        
+        // 8. Broadcast transaction (simple hex formatting)
+        let tx_hex = format!("{:x}", tx);
+        self.broadcast_tx_hex(&tx_hex)?;
         
         Ok(SendTransferResponse {
             bitcoin_txid: txid.to_string(),
             consignment_download_url: format!("/api/consignment/{}", consignment_filename),
             consignment_filename,
-            pending_status: "pending".to_string(),
+            pending_status: "broadcasted".to_string(),
         })
     }
     
-    // Helper: Sign PSBT (reuse existing logic from transaction.rs)
-    fn sign_psbt(
-        &self,
-        psbt: &mut bpstd::Psbt,
-        xprv: &bitcoin::bip32::Xpriv,
-    ) -> Result<(), crate::error::WalletError> {
-        // Use existing signing logic
-        todo!("Implement PSBT signing")
+    // Helper: Create WalletSigner implementing Signer trait
+    fn create_signer(&self, wallet_name: &str) -> Result<WalletSigner, crate::error::WalletError> {
+        let mnemonic = self.storage.load_mnemonic(wallet_name)?;
+        let descriptor = self.storage.load_descriptor(wallet_name)?;
+        Ok(WalletSigner::new(mnemonic, descriptor))
     }
     
-    fn broadcast_tx(
-        &self,
-        tx: &bpstd::Tx,
-    ) -> Result<(), crate::error::WalletError> {
-        // Use existing Esplora broadcast
-        todo!("Implement TX broadcast")
+    // Helper: Broadcast transaction via Esplora
+    fn broadcast_tx_hex(&self, tx_hex: &str) -> Result<(), crate::error::WalletError> {
+        use reqwest::blocking::Client;
+        
+        let client = Client::new();
+        let response = client
+            .post("https://mempool.space/signet/api/tx")
+            .body(tx_hex.to_string())
+            .send()
+            .map_err(|e| crate::error::WalletError::Network(e.to_string()))?;
+        
+        if !response.status().is_success() {
+            let error_text = response.text().unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(crate::error::WalletError::Network(format!("Broadcast failed: {}", error_text)));
+        }
+        
+        Ok(())
     }
 }
 ```
@@ -828,7 +853,75 @@ pub async fn download_consignment_handler(
 
 ---
 
-### Step 3.2: Frontend UI - Send Transfer
+### Step 3.2: WalletSigner Implementation (NEW - Based on Research)
+
+**File**: `wallet/src/wallet/signer.rs` (NEW)
+
+**Purpose**: Implement `Signer` and `Sign` traits for PSBT signing
+
+```rust
+use bpstd::psbt::{Signer, Rejected};
+use bc::secp256k1::{Secp256k1, Message, ecdsa};
+use bc::{Sighash, LegacyPk};
+use derive::{Sign, KeyOrigin, Xpriv};
+
+#[derive(Clone)]
+pub struct WalletSigner {
+    mnemonic: bip39::Mnemonic,
+    descriptor: String,
+}
+
+impl WalletSigner {
+    pub fn new(mnemonic: bip39::Mnemonic, descriptor: String) -> Self {
+        Self { mnemonic, descriptor }
+    }
+    
+    fn derive_key_from_origin(&self, origin: &KeyOrigin) -> Option<bc::PrivateKey> {
+        // Extract derivation path from KeyOrigin
+        // Use existing derive_private_key_for_index logic
+        // Return the private key for this path
+        todo!("Implement key derivation from KeyOrigin")
+    }
+}
+
+impl Signer for WalletSigner {
+    type Sign<'s> = Self where Self: 's;
+    
+    fn approve(&self, _psbt: &bpstd::Psbt) -> Result<Self::Sign<'_>, Rejected> {
+        // No user interaction needed in backend
+        Ok(self.clone())
+    }
+}
+
+impl Sign for WalletSigner {
+    fn sign_ecdsa(
+        &self,
+        sighash: Sighash,
+        _pk: LegacyPk,
+        origin: Option<&KeyOrigin>,
+    ) -> Option<ecdsa::Signature> {
+        let private_key = self.derive_key_from_origin(origin?)?;
+        
+        let secp = Secp256k1::new();
+        let message = Message::from_digest(sighash.to_byte_array());
+        Some(secp.sign_ecdsa(&message, &private_key.inner))
+    }
+    
+    fn sign_bip340(
+        &self,
+        _sighash: bc::TapSighash,
+        _pk: bc::XOnlyPk,
+        _leaf_hash: Option<bc::TapLeafHash>,
+    ) -> Option<bc::secp256k1::schnorr::Signature> {
+        // Not needed for P2WPKH (our descriptor type)
+        None
+    }
+}
+```
+
+---
+
+### Step 3.3: Frontend UI - Send Transfer
 
 **File**: `wallet-frontend/src/components/SendTransferModal.tsx` (NEW)
 
@@ -840,25 +933,75 @@ pub async fn download_consignment_handler(
 
 - ✅ Backend API: `POST /api/wallet/:name/send-transfer`
 - ✅ Backend API: `GET /api/consignment/:filename`
+- ✅ **NEW**: `WalletSigner` implementing `Signer` trait
+- ✅ **CORRECTED**: Consignment generation before signing
+- ✅ **SIMPLIFIED**: Broadcasting with hex formatting
 - ✅ Frontend: `SendTransferModal` component
-- ✅ PSBT signing integrated
-- ✅ Bitcoin TX broadcast
-- ✅ Consignment file generation
 - ✅ File download link
 
 **Test Checklist**:
 - [ ] Parse valid invoice
-- [ ] Create PSBT
-- [ ] Sign PSBT
-- [ ] Broadcast TX
-- [ ] Generate consignment
+- [ ] Create PSBT (with DBC commit already done)
+- [ ] Generate consignment (before signing)
+- [ ] Sign PSBT (using WalletSigner)
+- [ ] Finalize PSBT
+- [ ] Extract transaction
+- [ ] Broadcast TX (hex format)
 - [ ] Download consignment file
+
+**Key Workflow** *(Corrected)*:
+```
+1. pay_invoice()        → PSBT + Payment (DBC committed)
+2. consign_to_file()    → Generate consignment
+3. psbt.sign()          → Sign with WalletSigner
+4. psbt.finalize()      → Finalize inputs
+5. psbt.extract()       → Get signed transaction
+6. format!("{:x}", tx)  → Hex for broadcast
+7. POST to Esplora      → Broadcast
+```
 
 ---
 
-## Phase 4: Accept Consignment (Recipient)
+## Phase 4: Consignment Import/Export
 
-**Goal**: Recipient can upload and validate consignment
+**Goal**: Enable both genesis export/import (same wallet sync) and transfer consignment acceptance (different wallets)
+
+**Duration**: 3-4 days (Phase 4A: 1-2 days, Phase 4B: 1-2 days)
+
+**Confidence**: 8.5/10
+
+---
+
+## Understanding Two Types of Consignments
+
+### Genesis Consignment (Phase 4A)
+**Purpose:** Sync contract state across devices with the same wallet  
+**Use Case:** Computer A issues asset → Computer B imports to see it  
+**Bitcoin TX:** ❌ None required (no transfer)  
+**Recipients:** Same wallet, different devices
+
+### Transfer Consignment (Phase 4B)
+**Purpose:** Transfer asset ownership to different wallet  
+**Use Case:** Wallet A sends tokens → Wallet B receives tokens  
+**Bitcoin TX:** ✅ Required (moves tokens on-chain)  
+**Recipients:** Different wallets, different keys
+
+| Aspect | Genesis Consignment | Transfer Consignment |
+|--------|---------------------|---------------------|
+| **Purpose** | Share contract knowledge | Transfer ownership |
+| **Wallets** | Same (same mnemonic) | Different (different keys) |
+| **Bitcoin TX** | ❌ No | ✅ Yes |
+| **State Transitions** | Genesis only | Full history + new transfer |
+| **Endpoints** | Original genesis seal | New blinded seals |
+| **After Import** | Existing UTXO shows tokens | New tokens on new UTXO |
+| **Asset Movement** | No movement (already own) | Tokens change owners |
+| **Invoice Required** | ❌ No | ✅ Yes |
+
+---
+
+## Phase 4A: Genesis Export/Import (Same Wallet Sync)
+
+**Goal**: Export/import genesis consignment to sync contract state across devices
 
 **Duration**: 1-2 days
 
@@ -866,7 +1009,348 @@ pub async fn download_consignment_handler(
 
 ---
 
-### Step 4.1: Backend API - Accept Consignment
+### Step 4A.1: Backend API - Export Genesis Consignment
+
+**File**: `wallet/src/api/types.rs`
+
+**Add structs**:
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportGenesisRequest {
+    pub contract_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportGenesisResponse {
+    pub contract_id: String,
+    pub consignment_path: String,
+    pub file_size_bytes: u64,
+}
+```
+
+**File**: `wallet/src/wallet/manager.rs`
+
+**Add method**:
+```rust
+impl WalletManager {
+    pub fn export_genesis_consignment(
+        &self,
+        wallet_name: &str,
+        contract_id: &str,
+    ) -> Result<ExportGenesisResponse, crate::error::WalletError> {
+        // 1. Parse contract ID
+        use rgb::ContractId;
+        let contract_id = ContractId::from_str(contract_id)
+            .map_err(|e| WalletError::InvalidInput(format!("Invalid contract ID: {}", e)))?;
+        
+        // 2. Load contracts
+        let contracts = self.rgb_manager.load_contracts()?;
+        
+        // 3. Verify we have this contract
+        if !contracts.has_contract(contract_id) {
+            return Err(WalletError::Rgb("Contract not found".to_string()));
+        }
+        
+        // 4. Get contract state to find genesis seals
+        let state = contracts.contract_state(contract_id);
+        
+        // Find all seals for this contract (include all current allocations)
+        let mut seals = Vec::new();
+        for (_state_name, owned_states) in state.owned {
+            for owned_state in owned_states {
+                seals.push(owned_state.assignment.seal);
+            }
+        }
+        
+        if seals.is_empty() {
+            return Err(WalletError::Rgb("No allocations found for contract".to_string()));
+        }
+        
+        // 5. Create consignment for all state we know
+        let consignment_filename = format!("genesis_{}.rgb", contract_id);
+        let consignment_path = self.storage.base_dir()
+            .join("exports")
+            .join(&consignment_filename);
+        
+        std::fs::create_dir_all(consignment_path.parent().unwrap())?;
+        
+        // Export consignment including all seals we own
+        contracts.consign_to_file(
+            &consignment_path,
+            contract_id,
+            seals,
+        ).map_err(|e| WalletError::Rgb(format!("Export failed: {:?}", e)))?;
+        
+        let file_size = std::fs::metadata(&consignment_path)?.len();
+        
+        Ok(ExportGenesisResponse {
+            contract_id: contract_id.to_string(),
+            consignment_path: consignment_path.display().to_string(),
+            file_size_bytes: file_size,
+        })
+    }
+}
+```
+
+**File**: `wallet/src/api/handlers.rs`
+
+**Add handler**:
+```rust
+pub async fn export_genesis_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path((name, contract_id)): Path<(String, String)>,
+) -> Result<Json<ExportGenesisResponse>, crate::error::WalletError> {
+    if !manager.storage.wallet_exists(&name) {
+        return Err(crate::error::WalletError::WalletNotFound(name));
+    }
+    
+    let result = manager.export_genesis_consignment(&name, &contract_id)?;
+    Ok(Json(result))
+}
+
+pub async fn download_genesis_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(filename): Path<String>,
+) -> Result<impl IntoResponse, crate::error::WalletError> {
+    let file_path = manager.storage.base_dir()
+        .join("exports")
+        .join(&filename);
+    
+    if !file_path.exists() {
+        return Err(crate::error::WalletError::NotFound("Genesis file not found".to_string()));
+    }
+    
+    let contents = std::fs::read(&file_path)
+        .map_err(|e| crate::error::WalletError::Storage(e.to_string()))?;
+    
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        [(axum::http::header::CONTENT_DISPOSITION, 
+          format!("attachment; filename=\"{}\"", filename))],
+        contents,
+    ))
+}
+```
+
+**File**: `wallet/src/api/server.rs`
+
+**Add routes**:
+```rust
+.route("/api/wallet/:name/export-genesis/:contract_id", get(handlers::export_genesis_handler))
+.route("/api/genesis/:filename", get(handlers::download_genesis_handler))
+```
+
+---
+
+### Step 4A.2: Frontend UI - Export Genesis
+
+**File**: `wallet-frontend/src/components/ExportGenesisModal.tsx` (NEW)
+
+```tsx
+import { useState } from 'react';
+import { walletApi } from '../api/wallet';
+
+interface ExportGenesisModalProps {
+  walletName: string;
+  contractId: string;
+  assetName: string;
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export default function ExportGenesisModal({
+  walletName,
+  contractId,
+  assetName,
+  isOpen,
+  onClose,
+}: ExportGenesisModalProps) {
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleExport = async () => {
+    setError(null);
+    setIsExporting(true);
+
+    try {
+      const result = await walletApi.exportGenesis(walletName, contractId);
+      setExportResult(result);
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message || 'Export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleDownload = () => {
+    const filename = `genesis_${contractId}.rgb`;
+    window.location.href = `/api/genesis/${filename}`;
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-2xl w-full">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+          Export Contract State
+        </h2>
+
+        <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-md">
+          <p className="text-sm text-blue-800 dark:text-blue-300">
+            <strong>Use this to sync your wallet across devices.</strong><br />
+            Export the genesis consignment and import it on another device with the same wallet mnemonic.
+            No Bitcoin transaction is required.
+          </p>
+        </div>
+
+        <div className="mb-4">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            <strong>Asset:</strong> {assetName}<br />
+            <strong>Contract ID:</strong> {contractId}
+          </p>
+        </div>
+
+        {!exportResult ? (
+          <>
+            {error && (
+              <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 
+                            dark:border-red-700 rounded-md text-red-800 dark:text-red-300">
+                {error}
+              </div>
+            )}
+
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 
+                         dark:hover:bg-gray-700 rounded-md transition-colors"
+                disabled={isExporting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleExport}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 
+                         dark:hover:bg-blue-600 text-white rounded-md transition-colors 
+                         disabled:opacity-50"
+                disabled={isExporting}
+              >
+                {isExporting ? 'Exporting...' : 'Export Genesis Consignment'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="mb-4 p-4 bg-green-50 dark:bg-green-900/30 border border-green-200 
+                          dark:border-green-700 rounded-md">
+              <h3 className="text-lg font-semibold text-green-800 dark:text-green-300 mb-2">
+                ✅ Export Successful
+              </h3>
+              <p className="text-sm text-green-700 dark:text-green-400">
+                Genesis consignment exported. Download and transfer to your other device.
+              </p>
+            </div>
+
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                <strong>File Size:</strong> {(exportResult.file_size_bytes / 1024).toFixed(2)} KB
+              </p>
+            </div>
+
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 
+                         dark:hover:bg-gray-700 rounded-md transition-colors"
+              >
+                Close
+              </button>
+              <button
+                onClick={handleDownload}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 
+                         dark:hover:bg-green-600 text-white rounded-md transition-colors"
+              >
+                📥 Download File
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+---
+
+### Step 4A.3: Add Export Button to Asset List
+
+**File**: `wallet-frontend/src/pages/WalletDetail.tsx`
+
+**Add state and button**:
+```tsx
+const [showExportGenesisModal, setShowExportGenesisModal] = useState(false);
+const [selectedAssetForExport, setSelectedAssetForExport] = useState<any | null>(null);
+
+// In the RGB assets display section, add "Export" button:
+<button
+  onClick={() => {
+    setSelectedAssetForExport(asset);
+    setShowExportGenesisModal(true);
+  }}
+  className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded"
+>
+  Export
+</button>
+
+// At the bottom:
+{selectedAssetForExport && (
+  <ExportGenesisModal
+    walletName={name || ''}
+    contractId={selectedAssetForExport.asset_id}
+    assetName={selectedAssetForExport.asset_name}
+    isOpen={showExportGenesisModal}
+    onClose={() => {
+      setShowExportGenesisModal(false);
+      setSelectedAssetForExport(null);
+    }}
+  />
+)}
+```
+
+---
+
+### Phase 4A Deliverables
+
+- ✅ Backend: `export_genesis_consignment()` method
+- ✅ Backend API: `GET /api/wallet/:name/export-genesis/:contract_id`
+- ✅ Backend API: `GET /api/genesis/:filename` (download)
+- ✅ Frontend: `ExportGenesisModal` component
+- ✅ Frontend: Export button in asset list
+- ✅ File download handling
+
+**Test Checklist**:
+- [ ] Issue asset on Computer A
+- [ ] Export genesis consignment
+- [ ] Download `.rgb` file
+- [ ] Transfer file to Computer B (USB/network)
+- [ ] Verify file size is reasonable (KB range)
+
+---
+
+## Phase 4B: Accept Consignment (Transfer & Genesis Import)
+
+**Goal**: Accept both genesis and transfer consignments with automatic detection
+
+**Duration**: 1-2 days
+
+**Confidence**: 9/10
+
+---
+
+### Step 4B.1: Backend API - Enhanced Accept Consignment
 
 **File**: `wallet/src/api/types.rs`
 
@@ -876,13 +1360,14 @@ pub async fn download_consignment_handler(
 pub struct AcceptConsignmentResponse {
     pub contract_id: String,
     pub bitcoin_txid: String,
-    pub status: String,  // "pending" or "confirmed"
+    pub status: String,  // "genesis_imported", "pending", or "confirmed"
+    pub import_type: String,  // "genesis" or "transfer"
 }
 ```
 
 **File**: `wallet/src/wallet/manager.rs`
 
-**Add method**:
+**Add enhanced method**:
 ```rust
 impl WalletManager {
     pub fn accept_consignment(
@@ -893,14 +1378,14 @@ impl WalletManager {
         // 1. Save consignment to temp file
         let temp_path = self.storage.base_dir()
             .join("temp_consignments")
-            .join(format!("accept_{}.consignment", uuid::Uuid::new_v4()));
+            .join(format!("accept_{}.rgb", uuid::Uuid::new_v4()));
         
         std::fs::write(&temp_path, &consignment_bytes)?;
         
         // 2. Initialize runtime
         let mut runtime = self.get_runtime(wallet_name)?;
         
-        // 3. Consume consignment
+        // 3. Consume consignment (validates and imports)
         use std::convert::Infallible;
         runtime.consume_from_file(
             true,  // allow_unknown contracts
@@ -916,16 +1401,27 @@ impl WalletManager {
         let contract_id = consignment.contract_id();
         let bitcoin_txid = consignment.anchoring_txid();
         
-        // 5. Check Bitcoin TX status
-        let tx_status = self.check_tx_status(&bitcoin_txid)?;
+        // 5. Determine if this was a genesis import or transfer
+        // Genesis: no state transitions (only genesis operation)
+        // Transfer: has state transitions
+        let is_genesis = consignment.state_transitions().is_empty();
         
-        // 6. Cleanup temp file
+        // 6. Check Bitcoin TX status (if not genesis-only import)
+        let status = if !is_genesis {
+            let tx_status = self.check_tx_status(&bitcoin_txid)?;
+            if tx_status.confirmed { "confirmed" } else { "pending" }
+        } else {
+            "genesis_imported"
+        };
+        
+        // 7. Cleanup temp file
         let _ = std::fs::remove_file(&temp_path);
         
         Ok(AcceptConsignmentResponse {
             contract_id: contract_id.to_string(),
             bitcoin_txid: bitcoin_txid.to_string(),
-            status: if tx_status.confirmed { "confirmed" } else { "pending" },
+            status: status.to_string(),
+            import_type: if is_genesis { "genesis" } else { "transfer" }.to_string(),
         })
     }
 }
@@ -958,28 +1454,299 @@ pub async fn accept_consignment_handler(
 
 ---
 
-### Step 4.2: Frontend UI - Accept Consignment
+### Step 4B.2: Frontend UI - Accept Consignment (Enhanced)
 
 **File**: `wallet-frontend/src/components/AcceptConsignmentModal.tsx` (NEW)
 
-*(Implementation: file upload, validation status, success/error display)*
+```tsx
+import { useState } from 'react';
+import { walletApi } from '../api/wallet';
+
+interface AcceptConsignmentModalProps {
+  walletName: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+export default function AcceptConsignmentModal({
+  walletName,
+  isOpen,
+  onClose,
+  onSuccess,
+}: AcceptConsignmentModalProps) {
+  const [file, setFile] = useState<File | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [result, setResult] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setFile(e.target.files[0]);
+      setError(null);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!file) return;
+
+    setError(null);
+    setIsImporting(true);
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      
+      const importResult = await walletApi.acceptConsignment(walletName, bytes);
+      setResult(importResult);
+      
+      // Refresh wallet data after successful import
+      setTimeout(() => {
+        onSuccess();
+      }, 2000);
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message || 'Import failed');
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-2xl w-full">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+          Import Consignment
+        </h2>
+
+        {!result ? (
+          <>
+            <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 
+                          dark:border-blue-700 rounded-md">
+              <p className="text-sm text-blue-800 dark:text-blue-300">
+                <strong>Two types of consignments:</strong><br />
+                • <strong>Genesis:</strong> Sync contract state from another device (same wallet)<br />
+                • <strong>Transfer:</strong> Receive tokens from another wallet (different sender)
+              </p>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Select Consignment File (.rgb)
+              </label>
+              <input
+                type="file"
+                accept=".rgb,.consignment"
+                onChange={handleFileSelect}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md 
+                         bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              />
+              {file && (
+                <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                  Selected: {file.name} ({(file.size / 1024).toFixed(2)} KB)
+                </p>
+              )}
+            </div>
+
+            {error && (
+              <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 
+                            dark:border-red-700 rounded-md text-red-800 dark:text-red-300">
+                {error}
+              </div>
+            )}
+
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 
+                         dark:hover:bg-gray-700 rounded-md transition-colors"
+                disabled={isImporting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleImport}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 
+                         dark:hover:bg-blue-600 text-white rounded-md transition-colors 
+                         disabled:opacity-50"
+                disabled={!file || isImporting}
+              >
+                {isImporting ? 'Importing...' : 'Import Consignment'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="mb-4 p-4 bg-green-50 dark:bg-green-900/30 border border-green-200 
+                          dark:border-green-700 rounded-md">
+              <h3 className="text-lg font-semibold text-green-800 dark:text-green-300 mb-2">
+                ✅ Import Successful
+              </h3>
+              <p className="text-sm text-green-700 dark:text-green-400">
+                {result.import_type === 'genesis' 
+                  ? 'Genesis consignment imported. Contract state synchronized.'
+                  : 'Transfer consignment accepted. Assets will appear after confirmation.'}
+              </p>
+            </div>
+
+            <div className="mb-4 space-y-2">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                <strong>Type:</strong> {result.import_type === 'genesis' ? 'Genesis (Same Wallet Sync)' : 'Transfer (Received Tokens)'}
+              </p>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                <strong>Contract ID:</strong> {result.contract_id}
+              </p>
+              {result.import_type === 'transfer' && (
+                <>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    <strong>Bitcoin TX:</strong> {result.bitcoin_txid}
+                  </p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    <strong>Status:</strong> {result.status === 'confirmed' ? '✅ Confirmed' : '⏳ Pending'}
+                  </p>
+                </>
+              )}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => {
+                  onClose();
+                  setResult(null);
+                  setFile(null);
+                }}
+                className="px-4 py-2 bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 
+                         dark:hover:bg-gray-600 text-white rounded-md transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+```
 
 ---
 
-### Phase 4 Deliverables
+### Step 4B.3: Add Import Button to Wallet Page
 
+**File**: `wallet-frontend/src/pages/WalletDetail.tsx`
+
+**Add state and button**:
+```tsx
+const [showAcceptConsignmentModal, setShowAcceptConsignmentModal] = useState(false);
+
+// Add button near the top of the wallet detail page:
+<button
+  onClick={() => setShowAcceptConsignmentModal(true)}
+  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md"
+>
+  📥 Import Consignment
+</button>
+
+// At the bottom:
+<AcceptConsignmentModal
+  walletName={name || ''}
+  isOpen={showAcceptConsignmentModal}
+  onClose={() => setShowAcceptConsignmentModal(false)}
+  onSuccess={() => {
+    // Refresh wallet data
+    loadWalletData();
+  }}
+/>
+```
+
+---
+
+### Phase 4B Deliverables
+
+- ✅ Backend: Enhanced `accept_consignment()` with type detection
 - ✅ Backend API: `POST /api/wallet/:name/accept-consignment`
 - ✅ Frontend: `AcceptConsignmentModal` component
+- ✅ Frontend: Import button on wallet page
+- ✅ Automatic detection of genesis vs transfer
+- ✅ Different UI for each consignment type
 - ✅ File upload handling
-- ✅ Consignment validation
-- ✅ Status display (pending/confirmed)
+- ✅ Status display (genesis_imported/pending/confirmed)
 
 **Test Checklist**:
-- [ ] Upload valid consignment
-- [ ] Validate consignment
-- [ ] Check Bitcoin TX status
-- [ ] Update wallet balance
-- [ ] Error handling (invalid file)
+- [ ] Import genesis consignment on Computer B
+- [ ] Verify asset appears after genesis import
+- [ ] Import transfer consignment (if testing transfers)
+- [ ] Verify correct type detection (genesis vs transfer)
+- [ ] Error handling for invalid files
+- [ ] Verify Bitcoin TX status check for transfers
+
+---
+
+## Phase 4 Complete Deliverables
+
+### Backend APIs
+- ✅ `GET /api/wallet/:name/export-genesis/:contract_id` - Export genesis consignment
+- ✅ `GET /api/genesis/:filename` - Download genesis file
+- ✅ `POST /api/wallet/:name/accept-consignment` - Import any consignment
+
+### Frontend Components
+- ✅ `ExportGenesisModal` - Export genesis consignment
+- ✅ `AcceptConsignmentModal` - Import consignment (auto-detects type)
+- ✅ Export button in asset list
+- ✅ Import button on wallet page
+
+### Functionality
+- ✅ Genesis export for same-wallet sync
+- ✅ Genesis import (no Bitcoin TX required)
+- ✅ Transfer import (with Bitcoin TX validation)
+- ✅ Automatic type detection
+- ✅ File download/upload handling
+- ✅ Status tracking
+
+### User Flows
+
+**Same Wallet Sync (Genesis):**
+1. Computer A: Issue asset → Asset appears
+2. Computer A: Click "Export" → Download `genesis_XXX.rgb`
+3. Transfer file to Computer B (USB/network/cloud)
+4. Computer B: Click "Import Consignment" → Upload file
+5. Computer B: Asset appears (same UTXO as Computer A)
+
+**Transfer Between Wallets:**
+1. Wallet A: Generate invoice (Phase 2)
+2. Wallet B: Send transfer (Phase 3) → Download transfer consignment
+3. Transfer file to Wallet A
+4. Wallet A: Click "Import Consignment" → Upload file
+5. Wallet A: Tokens appear after Bitcoin TX confirms
+
+---
+
+## Complete Test Checklist
+
+**Genesis Export/Import:**
+- [ ] Export genesis from wallet that issued asset
+- [ ] Download `.rgb` file
+- [ ] Transfer file to different device
+- [ ] Import on device with same wallet mnemonic
+- [ ] Verify asset appears with correct amount
+- [ ] Verify UTXO shows as occupied
+- [ ] Verify no Bitcoin transaction required
+
+**Transfer Accept:**
+- [ ] Receive transfer consignment from sender
+- [ ] Import transfer consignment
+- [ ] Verify Bitcoin TX is checked
+- [ ] Verify status shows pending/confirmed
+- [ ] Verify balance updates after confirmation
+- [ ] Verify different UTXO than sender
+
+**Error Handling:**
+- [ ] Invalid file format
+- [ ] Corrupted consignment
+- [ ] Wrong wallet (transfer to different wallet)
+- [ ] Network errors during TX check
+- [ ] File too large
 
 ---
 
@@ -1091,12 +1858,18 @@ pub async fn accept_consignment_handler(
 | Phase | Duration | Complexity | Confidence |
 |-------|----------|------------|------------|
 | **Phase 1: RGB Runtime Foundation** | 3-4 days | High | 7.5/10 |
-| **Phase 2: Invoice Generation** | 2 days | Medium | 8/10 |
-| **Phase 3: Send Transfer** | 3-4 days | High | 7/10 |
-| **Phase 4: Accept Consignment** | 1-2 days | Low | 9/10 |
+| **Phase 2: Invoice Generation** | ✅ 2 days | Medium | 8/10 |
+| **Phase 3: Send Transfer** | **2-3 days** *(was 3-4)* | **Medium** *(was High)* | **8.5/10** *(was 7/10)* |
+| **Phase 4A: Genesis Export/Import** | 1-2 days | Low-Medium | 9/10 |
+| **Phase 4B: Transfer Accept** | 1-2 days | Low | 9/10 |
 | **Phase 5: Frontend Integration** | 2 days | Medium | 9/10 |
 | **Phase 6: Testing & Polish** | 2-3 days | Medium | 8/10 |
-| **TOTAL** | **13-19 days** | — | **8/10** |
+| **TOTAL** | **13-20 days** *(was 14-21)* | — | **8.2/10** *(was 8/10)* |
+
+**Phase 3 Updates** *(After Deep Research - Oct 12, 2025)*:
+- ✅ Complexity reduced (Medium vs High) - simpler workflow discovered
+- ✅ Duration reduced (2-3 vs 3-4 days) - no `complete()` step, no type conversions
+- ✅ Confidence increased (8.5/10 vs 7/10) - complete RGB CLI source analysis
 
 ---
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { walletApi } from '../api';
 import type { BalanceInfo, AddressInfo, NextAddressInfo } from '../api/types';
@@ -8,6 +8,9 @@ import UTXOList from '../components/UTXOList';
 import CreateUtxoModal from '../components/CreateUtxoModal';
 import IssueAssetModal from '../components/IssueAssetModal';
 import GenerateInvoiceModal from '../components/GenerateInvoiceModal';
+import SendTransferModal from '../components/SendTransferModal';
+import AcceptConsignmentModal from '../components/AcceptConsignmentModal';
+import ExportGenesisModal from '../components/ExportGenesisModal';
 import { copyToClipboard } from '../utils/format';
 
 export default function WalletDetail() {
@@ -25,15 +28,13 @@ export default function WalletDetail() {
   const [showCreateUtxoModal, setShowCreateUtxoModal] = useState(false);
   const [showIssueAssetModal, setShowIssueAssetModal] = useState(false);
   const [showGenerateInvoiceModal, setShowGenerateInvoiceModal] = useState(false);
+  const [showSendTransferModal, setShowSendTransferModal] = useState(false);
+  const [showAcceptConsignmentModal, setShowAcceptConsignmentModal] = useState(false);
+  const [showExportGenesisModal, setShowExportGenesisModal] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<{ contractId: string; ticker: string } | null>(null);
+  const [selectedAssetForExport, setSelectedAssetForExport] = useState<{ contractId: string; ticker: string } | null>(null);
 
-  useEffect(() => {
-    if (name) {
-      loadWalletData();
-    }
-  }, [name]);
-
-  const loadWalletData = async () => {
+  const loadWalletData = useCallback(async () => {
     if (!name) return;
 
     try {
@@ -52,7 +53,13 @@ export default function WalletDetail() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [name]);
+
+  useEffect(() => {
+    if (name) {
+      loadWalletData();
+    }
+  }, [name, loadWalletData]);
 
   const loadAllAddresses = async () => {
     if (!name) return;
@@ -152,6 +159,12 @@ export default function WalletDetail() {
         <h2 className="text-3xl font-bold text-gray-900 dark:text-white">💰 {name}</h2>
         <div className="flex gap-2">
           <button
+            onClick={() => setShowAcceptConsignmentModal(true)}
+            className="px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-md transition-colors font-medium"
+          >
+            📥 Import Consignment
+          </button>
+          <button
             onClick={() => setShowCreateUtxoModal(true)}
             className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium"
           >
@@ -236,15 +249,32 @@ export default function WalletDetail() {
                       {asset.contractId}
                     </p>
                   </div>
-                  <button
-                    onClick={() => {
-                      setSelectedAsset({ contractId: asset.contractId, ticker: asset.ticker });
-                      setShowGenerateInvoiceModal(true);
-                    }}
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium text-sm"
-                  >
-                    📨 Receive
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowSendTransferModal(true)}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white rounded-md transition-colors font-medium text-sm"
+                    >
+                      📤 Send
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedAsset({ contractId: asset.contractId, ticker: asset.ticker });
+                        setShowGenerateInvoiceModal(true);
+                      }}
+                      className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium text-sm"
+                    >
+                      📨 Receive
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedAssetForExport({ contractId: asset.contractId, ticker: asset.ticker });
+                        setShowExportGenesisModal(true);
+                      }}
+                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-md transition-colors font-medium text-sm"
+                    >
+                      📦 Export
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -385,6 +415,35 @@ export default function WalletDetail() {
           onClose={() => {
             setShowGenerateInvoiceModal(false);
             setSelectedAsset(null);
+          }}
+        />
+      )}
+
+      <SendTransferModal
+        walletName={name || ''}
+        isOpen={showSendTransferModal}
+        onClose={() => setShowSendTransferModal(false)}
+      />
+
+      <AcceptConsignmentModal
+        walletName={name || ''}
+        isOpen={showAcceptConsignmentModal}
+        onClose={() => setShowAcceptConsignmentModal(false)}
+        onSuccess={() => {
+          setShowAcceptConsignmentModal(false);
+          loadWalletData();
+        }}
+      />
+
+      {selectedAssetForExport && (
+        <ExportGenesisModal
+          walletName={name || ''}
+          contractId={selectedAssetForExport.contractId}
+          assetName={selectedAssetForExport.ticker}
+          isOpen={showExportGenesisModal}
+          onClose={() => {
+            setShowExportGenesisModal(false);
+            setSelectedAssetForExport(null);
           }}
         />
       )}

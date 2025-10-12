@@ -1337,3 +1337,752 @@ fn ensure_rgb_wallet_files(wallet_name: &str) -> Result<(), Error> {
 
 ---
 
+## Phase 3 Send Transfer - Deep Research Analysis
+
+### Research Date: October 12, 2025
+
+### Critical Discoveries from RGB Source Code Analysis
+
+---
+
+#### Discovery 1: `pay_invoice()` Already Includes DBC Commit! ✅
+
+**Source**: `/rgb/src/runtime.rs` lines 150-214
+
+**Finding**: The PSBT returned from `pay_invoice()` is **already DBC-committed**. No need to call `runtime.complete()` separately!
+
+**Evidence**:
+```rust
+// pay_invoice internally calls transfer()
+pub fn pay_invoice(...) -> Result<(Psbt, Payment), ...> {
+    let request = self.fulfill(invoice, strategy, giveaway)?;
+    let script = OpRequestSet::with(request.clone());
+    let (psbt, mut payment) = self.transfer(script, params)?;  // ← Calls transfer
+    payment.terminals.insert(terminal);
+    Ok((psbt, payment))
+}
+
+// transfer() internally calls complete()
+pub fn transfer(...) -> Result<(Psbt, Payment), ...> {
+    let payment = self.exec(script, params)?;
+    let psbt = self.complete(payment.uncomit_psbt.clone(), &payment.bundle)?;  // ← DBC COMMIT HERE!
+    Ok((psbt, payment))
+}
+
+// complete() does the DBC commitment
+pub fn complete(&mut self, mut psbt: Psbt, bundle: &PrefabBundle) -> Result<Psbt, TransferError> {
+    let (mpc, dbc) = psbt.dbc_commit()?;  // ← Deterministic Bitcoin Commitment
+    let tx = psbt.to_unsigned_tx();
+    let prevouts = psbt.inputs().map(|inp| inp.previous_outpoint).collect();
+    self.include(bundle, &tx.into(), mpc, dbc, &prevouts)?;
+    Ok(psbt)
+}
+```
+
+**Implication**: The workflow is simpler than initially thought. The PSBT is ready for signing immediately after `pay_invoice()`.
+
+**Payment Struct Contents**:
+```rust
+pub struct Payment {
+    pub uncomit_psbt: Psbt,           // Pre-commit version (for RBF)
+    pub psbt_meta: PsbtMeta,          // Change output info
+    pub bundle: PrefabBundle,         // RGB operations
+    pub terminals: BTreeSet<AuthToken>, // For consignment
+}
+```
+
+---
+
+#### Discovery 2: Correct Workflow Order - Consignment BEFORE Signing! ✅
+
+**Source**: `/rgb/cli/src/exec.rs` lines 397-440
+
+**Finding**: RGB CLI generates consignment **BEFORE** signing the PSBT, not after!
+
+**Evidence from RGB CLI**:
+```rust
+// 1. Generate payment
+let (mut psbt, payment) = runtime.pay_invoice(invoice, strategy, params, sats)?;
+
+// 2. Save PSBT to file (for external signing)
+psbt.encode(ver, &mut psbt_file)?;
+
+// 3. CREATE CONSIGNMENT IMMEDIATELY (before signing!)
+runtime.contracts.consign_to_file(
+    consignment_path,
+    invoice.scope,      // contract_id
+    payment.terminals   // from Payment struct
+)?;
+
+// 4. Sign PSBT externally (user does this with hardware wallet, etc.)
+// 5. Finalize and extract (separate command)
+// 6. Broadcast
+```
+
+**Rationale**: 
+- Consignment contains RGB state history and proofs
+- Bitcoin transaction details are finalized at PSBT creation
+- Signatures don't affect RGB state validity
+- Recipient can validate consignment while sender signs offline
+
+**Correct Flow**:
+```
+pay_invoice() → save PSBT → generate consignment → sign PSBT → finalize → extract → broadcast
+```
+
+**Previous Plan Was Wrong**:
+```
+pay_invoice() → sign PSBT → broadcast → generate consignment  // ❌ INCORRECT ORDER
+```
+
+---
+
+#### Discovery 3: PSBT Signing with `bpstd` Signer Trait ✅
+
+**Source**: `/bp-std/psbt/src/sign.rs` lines 70-113
+
+**Finding**: `bpstd::Psbt` has a clean signing API using the `Signer` trait.
+
+**Signing API**:
+```rust
+impl Psbt {
+    pub fn sign(&mut self, signer: &impl Signer) -> Result<usize, SignError> {
+        let satisfier = signer.approve(self)?;
+        let tx = self.to_unsigned_tx();
+        let prevouts = self.inputs.iter().map(Input::prev_txout).cloned().collect();
+        let mut sig_hasher = SighashCache::new(Tx::from(tx), prevouts)?;
+        
+        for input in &mut self.inputs {
+            sig_count += input.sign(&satisfier, &mut sig_hasher)?;
+        }
+        Ok(sig_count)
+    }
+}
+```
+
+**Signer Trait Requirements**:
+```rust
+pub trait Signer {
+    type Sign<'s>: Sign where Self: 's;
+    fn approve(&self, psbt: &Psbt) -> Result<Self::Sign<'_>, Rejected>;
+}
+
+pub trait Sign {
+    fn sign_ecdsa(
+        &self,
+        sighash: Sighash,
+        pk: LegacyPk,
+        origin: Option<&KeyOrigin>,
+    ) -> Option<ecdsa::Signature>;
+    
+    fn sign_bip340(
+        &self,
+        sighash: TapSighash,
+        pk: XOnlyPk,
+        leaf_hash: Option<TapLeafHash>,
+    ) -> Option<bip340::Signature>;
+}
+```
+
+**Implementation Strategy**:
+```rust
+struct WalletSigner {
+    mnemonic: bip39::Mnemonic,
+    descriptor: String,
+}
+
+impl Signer for WalletSigner {
+    type Sign<'s> = Self where Self: 's;
+    
+    fn approve(&self, _psbt: &Psbt) -> Result<Self::Sign<'_>, Rejected> {
+        // No user interaction needed in our backend
+        Ok(self.clone())
+    }
+}
+
+impl Sign for WalletSigner {
+    fn sign_ecdsa(
+        &self,
+        sighash: Sighash,
+        pk: LegacyPk,
+        origin: Option<&KeyOrigin>,
+    ) -> Option<ecdsa::Signature> {
+        // Derive private key from origin path
+        let private_key = self.derive_key_from_origin(origin?)?;
+        
+        // Sign sighash
+        let secp = Secp256k1::new();
+        let message = Message::from_digest(sighash.to_byte_array());
+        Some(secp.sign_ecdsa(&message, &private_key.inner))
+    }
+    
+    fn sign_bip340(...) -> Option<bip340::Signature> {
+        // Not needed for P2WPKH (our descriptor type)
+        None
+    }
+}
+```
+
+**Key Insight**: We can reuse our existing key derivation logic (`derive_private_key_for_index`) but adapt it to work with `KeyOrigin` from PSBT.
+
+---
+
+#### Discovery 4: Type Conversions and Broadcasting ✅
+
+**Source**: `/bp-esplora-client/src/blocking.rs` lines 270-293
+
+**Finding**: Broadcasting `bpstd::Tx` is trivial - just format as hex!
+
+**Broadcasting**:
+```rust
+// bpstd::Tx implements Display with :x formatting
+pub fn broadcast(&self, transaction: &Tx) -> Result<(), Error> {
+    let mut request = minreq::post(format!("{}/tx", self.url))
+        .with_body(format!("{transaction:x}").as_bytes().to_vec());
+    // ... send request
+}
+```
+
+**Our Implementation**:
+```rust
+fn broadcast_tx(&self, tx: &bpstd::Tx) -> Result<String, WalletError> {
+    let tx_hex = format!("{:x}", tx);
+    
+    // Can use our existing HTTP client
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://mempool.space/signet/api/tx")
+        .body(tx_hex)
+        .send()
+        .await?;
+    
+    let txid = response.text().await?;
+    Ok(txid)
+}
+```
+
+**No Conversion Needed**: Everything uses `bpstd` types natively! No need to convert between `bpstd::Tx` and `bitcoin::Transaction`.
+
+---
+
+#### Discovery 5: Corrected Send Transfer Implementation ✅
+
+**Complete Workflow**:
+
+```rust
+pub fn send_transfer(
+    &self,
+    wallet_name: &str,
+    request: SendTransferRequest,
+) -> Result<SendTransferResponse, WalletError> {
+    // 1. Parse invoice
+    let invoice = RgbInvoice::from_str(&request.invoice)
+        .map_err(|e| WalletError::InvalidInput(format!("Invalid invoice: {:?}", e)))?;
+    
+    // 2. Initialize runtime
+    let mut runtime = self.get_runtime(wallet_name)?;
+    
+    // 3. Create payment (ALREADY includes complete/DBC commit!)
+    let params = TxParams::with(request.fee_rate_sat_vb.unwrap_or(2));
+    let (mut psbt, payment) = runtime.pay_invoice(
+        &invoice,
+        CoinselectStrategy::Accumulative,
+        params,
+        Some(Sats::from_sats(1000)),  // Min locked amount
+    ).map_err(|e| WalletError::Rgb(format!("Payment failed: {:?}", e)))?;
+    
+    // 4. **CREATE CONSIGNMENT FIRST** (before signing!)
+    let consignment_filename = format!("transfer_{}_{}.rgb", 
+        invoice.scope, Utc::now().timestamp());
+    let consignment_path = self.storage.base_dir()
+        .join("consignments")
+        .join(&consignment_filename);
+    
+    std::fs::create_dir_all(consignment_path.parent().unwrap())?;
+    
+    runtime.contracts.consign_to_file(
+        &consignment_path,
+        invoice.scope,           // contract_id (from invoice)
+        payment.terminals        // from Payment struct
+    ).map_err(|e| WalletError::Rgb(format!("Consignment failed: {:?}", e)))?;
+    
+    // 5. Sign PSBT (using custom signer)
+    let signer = self.create_signer(wallet_name)?;
+    psbt.sign(&signer)
+        .map_err(|e| WalletError::Bitcoin(format!("Signing failed: {:?}", e)))?;
+    
+    // 6. Finalize PSBT
+    psbt.finalize(runtime.wallet.descriptor());
+    
+    // 7. Extract signed transaction
+    let tx = psbt.extract()
+        .map_err(|e| WalletError::Rgb(format!("Extraction failed: {:?}", e)))?;
+    let txid = tx.txid();
+    
+    // 8. Broadcast transaction
+    let tx_hex = format!("{:x}", tx);
+    self.broadcast_tx_hex(&tx_hex)?;
+    
+    Ok(SendTransferResponse {
+        bitcoin_txid: txid.to_string(),
+        consignment_download_url: format!("/api/consignment/{}", consignment_filename),
+        consignment_filename,
+        status: "broadcasted".to_string(),
+    })
+}
+```
+
+---
+
+### Updated Risk Assessment
+
+| Risk | Before Research | After Deep Research | Resolution |
+|------|----------------|---------------------|------------|
+| Missing `complete` step | HIGH ❌ | ✅ **RESOLVED** | Already handled by `pay_invoice` |
+| Wrong workflow order | HIGH ❌ | ✅ **RESOLVED** | Consignment before signing confirmed |
+| PSBT signing complexity | HIGH ❌ | MEDIUM ⚠️ | Use `Signer` trait, implement custom signer |
+| Type conversions | MEDIUM ⚠️ | ✅ **RESOLVED** | `format!("{:x}", tx)` for hex |
+| Consignment API usage | LOW ✅ | ✅ **CONFIRMED** | `consign_to_file(path, contract_id, terminals)` |
+
+---
+
+### Updated Confidence Levels
+
+| Component | Before | After | Notes |
+|-----------|--------|-------|-------|
+| Workflow Understanding | 6/10 | **9.5/10** ✅ | Complete analysis of RGB CLI source |
+| PSBT Signing | 5/10 | **8/10** ⚠️ | Clear API, need custom implementation |
+| Type Conversions | 6/10 | **10/10** ✅ | No conversions needed |
+| Consignment Generation | 8/10 | **9.5/10** ✅ | Confirmed with RGB CLI code |
+| Broadcasting | 7/10 | **10/10** ✅ | Trivial hex formatting |
+| **Overall Phase 3** | **6.5/10** | **8.5/10** ✅ | **High confidence, ready for implementation** |
+
+---
+
+### Implementation Complexity Reduction
+
+**Original Estimate**: 3-4 days (High complexity)
+
+**Updated Estimate**: 2-3 days (Medium complexity)
+
+**Reasons for Reduction**:
+1. ✅ No need to implement `complete` step (already done)
+2. ✅ Simpler workflow (no post-broadcast consignment generation)
+3. ✅ No type conversions needed
+4. ✅ Clear signing API with `Signer` trait
+5. ⚠️ Only challenge: Custom `Signer` implementation (1 day)
+
+---
+
+### Remaining Implementation Tasks
+
+#### Task 1: Custom Signer Implementation (Medium - 1 day)
+- Create `WalletSigner` struct
+- Implement `Signer` trait
+- Implement `Sign` trait with ECDSA signing
+- Adapt `derive_private_key_for_index` to work with `KeyOrigin`
+
+#### Task 2: Send Transfer Method (Easy - 0.5 day)
+- Implement corrected workflow
+- Generate consignment before signing
+- Use custom signer for PSBT
+- Finalize and extract transaction
+- Broadcast with hex formatting
+
+#### Task 3: API Endpoints & Handlers (Easy - 0.5 day)
+- `POST /api/wallet/:name/send-transfer`
+- `GET /api/consignment/:filename`
+- Request/Response types
+
+#### Task 4: Frontend UI (Medium - 1 day)
+- `SendTransferModal.tsx`
+- Invoice paste input
+- Consignment download link
+- Error handling
+
+#### Task 5: Testing & Polish (Easy - 0.5 day)
+- End-to-end test flow
+- Error handling
+- Edge cases
+
+**Total**: 2-3 days
+
+---
+
+### Open Questions (Minimal)
+
+1. **KeyOrigin to derivation index mapping**: How to extract the final index from PSBT's `KeyOrigin`?
+   - **Status**: Need to examine `KeyOrigin` structure
+   - **Difficulty**: Low (likely documented in `bp-std`)
+
+2. **Multiple inputs signing**: Does the signer need to handle all inputs automatically?
+   - **Status**: Yes, `psbt.sign()` iterates all inputs
+   - **Difficulty**: None (handled by framework)
+
+---
+
+### Next Steps
+
+1. ✅ Complete Phase 3 deep research - **DONE**
+2. ✅ Update documentation with findings - **IN PROGRESS**
+3. ⏭️ **Await user confirmation to proceed**
+4. ⏭️ Implement custom `WalletSigner`
+5. ⏭️ Implement send transfer method
+6. ⏭️ Test end-to-end flow
+
+---
+
+### References for Phase 3 Implementation
+
+**Key Source Files**:
+- `/rgb/src/runtime.rs` - `pay_invoice()`, `transfer()`, `complete()` methods
+- `/rgb/cli/src/exec.rs` - Complete send transfer workflow (lines 397-440)
+- `/bp-std/psbt/src/sign.rs` - `Signer` and `Sign` trait definitions
+- `/bp-std/src/signers.rs` - `TestnetSigner` reference implementation
+- `/bp-esplora-client/src/blocking.rs` - Broadcasting with hex format
+
+---
+
+**Phase 3 Status**: 📋 Research Complete - **Awaiting User Confirmation to Proceed** (Confidence: 8.5/10)
+
+---
+
+## Phase 4B Accept Consignment - Deep Research Analysis
+
+### Research Date: October 12, 2025
+
+### Problem Statement
+
+Initial implementation of `accept_consignment` had non-production-ready aspects:
+1. Could not detect genesis vs transfer consignments
+2. Could not extract Bitcoin transaction ID from transfer consignments
+3. Could not determine transaction status (pending vs confirmed)
+
+The challenge was that `Consignment` struct has private fields and is consumed during `consume_from_file()`, making direct parsing impossible.
+
+---
+
+### Discovery 1: Consignment Structure is Opaque ✅
+
+**Source**: `/rgb-std/src/consignment.rs` lines 40-107
+
+**Finding**: The `Consignment<Seal>` struct is intentionally opaque:
+
+```rust
+pub struct Consignment<Seal: RgbSeal> {
+    header: ConsignmentHeader<Seal>,           // PRIVATE
+    operation_seals: LargeVec<OperationSeals<Seal>>,  // PRIVATE
+}
+
+impl<Seal: RgbSeal> Consignment<Seal> {
+    pub fn articles(...) -> Result<Articles, SemanticError>  // Only metadata
+    pub(crate) fn into_operations(self) -> InMemOps<Seal>   // Consumes self!
+}
+```
+
+**Key Insight**: After `consume_from_file()` is called, the consignment is consumed (moved) and stored internally. We cannot access it anymore.
+
+**Implication**: We must query the **imported contract state** instead of parsing the consignment file directly.
+
+---
+
+### Discovery 2: Post-Import Contract Querying ✅
+
+**Source**: `/rgb-std/src/contract.rs` lines 437-452
+
+**Finding**: After import, we can query contract state through the `Contract` API:
+
+```rust
+pub fn witness_ids(&self) -> impl Iterator<Item = <P::Seal as RgbSeal>::WitnessId>
+pub fn witnesses(&self) -> impl Iterator<Item = Witness<P::Seal>>
+pub fn operations(&self) -> impl Iterator<Item = (Opid, Operation, OpRels<P::Seal>)>
+pub fn trace(&self) -> impl Iterator<Item = (Opid, Transition)>
+```
+
+**Key Structure - Witness**:
+```rust
+pub struct Witness<Seal: RgbSeal> {
+    pub id: Seal::WitnessId,           // For TxoSeal, this IS Txid!
+    pub published: Seal::Published,     // Block height/anchor data
+    pub client: Seal::Client,           // DBC commitment data
+    pub status: WitnessStatus,          // Mining status
+    pub opids: HashSet<Opid>,          // Operation IDs
+}
+```
+
+**Critical Discovery**: For Bitcoin operations (`TxoSeal`), the `WitnessId` type **IS** `bitcoin::Txid`!
+
+---
+
+### Discovery 3: Genesis vs Transfer Detection ✅
+
+**Method**: Check the number of witnesses after import
+
+**Logic**:
+- **Genesis Consignment**: Contains only the genesis operation (no Bitcoin TX witness)
+  - `witness_ids().count() == 0`
+- **Transfer Consignment**: Contains state transitions with Bitcoin TX witnesses
+  - `witness_ids().count() >= 1`
+
+**Implementation**:
+```rust
+let witness_count = runtime.contracts
+    .with_contract(contract_id, |contract| {
+        contract.witness_ids().count()
+    });
+
+let import_type = if witness_count == 0 {
+    "genesis"
+} else {
+    "transfer"
+};
+```
+
+**Confidence**: 9/10 ✅ (Straightforward witness count check)
+
+---
+
+### Discovery 4: Bitcoin TX ID Extraction ✅
+
+**Source**: Type analysis of `TxoSeal` and `WitnessId`
+
+**Finding**: For Bitcoin-based RGB (`TxoSeal`), the witness ID **directly maps** to `Txid`:
+
+```rust
+// From rgb-std/src/stl.rs and rgb-std/src/popls/bp.rs
+use bp::seals::TxoSeal;
+
+// For TxoSeal:
+type WitnessId = bitcoin::Txid;  // Direct type alias!
+```
+
+**Implementation**:
+```rust
+let witnesses: Vec<_> = runtime.contracts
+    .with_contract(contract_id, |contract| {
+        contract.witnesses().collect()
+    });
+
+// Get the last (most recent) witness
+if let Some(last_witness) = witnesses.last() {
+    let txid: Txid = last_witness.id;  // Direct access!
+    let bitcoin_txid = Some(txid.to_string());
+}
+```
+
+**Confidence**: 10/10 ✅ (Direct type mapping, no conversion needed)
+
+---
+
+### Discovery 5: Transaction Status Detection ✅
+
+**Source**: `/rgb-std/src/pile.rs` lines 41-139
+
+**Finding**: `WitnessStatus` enum provides confirmation status:
+
+```rust
+pub enum WitnessStatus {
+    Genesis,                    // Contract genesis (no TX)
+    Tentative,                  // Unconfirmed (in mempool)
+    Mined(NonZeroU64),          // Confirmed at block height
+    Archived,                   // Orphaned/replaced
+}
+```
+
+**Status Mapping**:
+```rust
+let status = match witness.status {
+    WitnessStatus::Genesis => "genesis_imported",
+    WitnessStatus::Tentative => "pending",
+    WitnessStatus::Mined(_) => "confirmed",
+    WitnessStatus::Archived => "archived",
+};
+```
+
+**Confidence**: 9/10 ✅ (Clear enum mapping)
+
+---
+
+### Complete Production-Ready Implementation ✅
+
+**Algorithm**:
+
+```rust
+pub fn accept_consignment(
+    &self,
+    wallet_name: &str,
+    consignment_bytes: Vec<u8>,
+) -> Result<AcceptConsignmentResponse, WalletError> {
+    // 1. Save consignment to temp file
+    let temp_path = save_to_temp_file(&consignment_bytes)?;
+    
+    // 2. Initialize runtime
+    let mut runtime = self.get_runtime(wallet_name)?;
+    
+    // 3. Get contract IDs BEFORE import
+    let contract_ids_before: HashSet<String> = runtime.contracts
+        .contract_ids()
+        .map(|id| id.to_string())
+        .collect();
+    
+    // 4. Import consignment (validates and stores)
+    runtime.consume_from_file(
+        true,  // allow_unknown contracts
+        &temp_path,
+        |_, _, _| Result::<_, Infallible>::Ok(()),
+    )?;
+    
+    // 5. Find newly imported contract
+    let contract_ids_after: HashSet<String> = runtime.contracts
+        .contract_ids()
+        .map(|id| id.to_string())
+        .collect();
+    
+    let new_contract_id = contract_ids_after
+        .difference(&contract_ids_before)
+        .next()
+        .ok_or("No new contract imported")?
+        .clone();
+    
+    // 6. Query imported contract state
+    let (import_type, bitcoin_txid, status) = runtime.contracts
+        .with_contract(contract_id, |contract| {
+            let witnesses: Vec<_> = contract.witnesses().collect();
+            
+            if witnesses.is_empty() {
+                // Genesis: no witnesses
+                ("genesis", None, "genesis_imported")
+            } else {
+                // Transfer: extract last witness
+                let last_witness = witnesses.last().unwrap();
+                let txid = last_witness.id.to_string();
+                let status = match last_witness.status {
+                    WitnessStatus::Tentative => "pending",
+                    WitnessStatus::Mined(_) => "confirmed",
+                    _ => "imported",
+                };
+                ("transfer", Some(txid), status)
+            }
+        });
+    
+    // 7. Cleanup temp file
+    let _ = std::fs::remove_file(&temp_path);
+    
+    Ok(AcceptConsignmentResponse {
+        contract_id: new_contract_id,
+        status: status.to_string(),
+        import_type: import_type.to_string(),
+        bitcoin_txid,
+    })
+}
+```
+
+---
+
+### Updated Risk Assessment
+
+| Risk | Before Research | After Research | Resolution |
+|------|----------------|----------------|------------|
+| Cannot parse consignment | HIGH ❌ | ✅ **RESOLVED** | Query contract post-import |
+| Cannot detect genesis/transfer | HIGH ❌ | ✅ **RESOLVED** | Check witness count |
+| Cannot extract TX ID | HIGH ❌ | ✅ **RESOLVED** | `witness.id` IS Txid |
+| Cannot determine status | MEDIUM ⚠️ | ✅ **RESOLVED** | Map `WitnessStatus` enum |
+
+---
+
+### Updated Confidence Levels
+
+| Component | Before | After | Notes |
+|-----------|--------|-------|-------|
+| Genesis Detection | 3/10 | **9/10** ✅ | Witness count check |
+| TX ID Extraction | 2/10 | **10/10** ✅ | Direct type mapping |
+| Status Detection | 4/10 | **9/10** ✅ | Clear enum mapping |
+| **Overall Phase 4B** | **3/10** | **9/10** ✅ | **Production-ready** |
+
+---
+
+### Implementation Complexity
+
+**Original Estimate**: Unknown (blocked by API limitations)
+
+**Updated Estimate**: 1-2 hours (Simple contract querying)
+
+**Reasons for Simplicity**:
+1. ✅ No need to parse consignment structure
+2. ✅ Direct witness querying API available
+3. ✅ Type mappings are 1:1 (no conversions)
+4. ✅ Clear enum values for status
+
+---
+
+### Key Takeaways
+
+1. **RGB API Design**: The consignment is consumed during import for a reason - it's transformed into queryable contract state.
+
+2. **Witness = Bitcoin TX**: For Bitcoin RGB, witnesses directly correspond to Bitcoin transactions.
+
+3. **Genesis vs Transfer**: The distinguishing factor is the presence of witnesses (Bitcoin TXs).
+
+4. **Query After Import**: Always query the contract state after `consume_from_file()` rather than trying to parse the consignment.
+
+---
+
+### References for Phase 4B Implementation
+
+**Key Source Files**:
+- `/rgb-std/src/consignment.rs` - Consignment structure (opaque by design)
+- `/rgb-std/src/contract.rs` - Contract query methods (`witnesses()`, `witness_ids()`)
+- `/rgb-std/src/pile.rs` - `Witness` struct and `WitnessStatus` enum
+- `/rgb-std/src/popls/bp.rs` - `TxoSeal` type for Bitcoin
+- `/rgb-std/src/stl.rs` - Type definitions and mappings
+
+---
+
+**Phase 4B Status**: 📋 Research Complete - **Ready for Production Implementation** (Confidence: 9/10)
+
+---
+
+### Implementation Notes (Post-Implementation)
+
+**Initial API Limitation**: During initial implementation, we discovered that the `with_contract` method in `Contracts` struct was **private**, preventing access to `Contract::witnesses()` method.
+
+**Resolution**: ✅ **RESOLVED** - Added public witness query methods to RGB source code.
+
+**RGB Source Code Modifications** (`rgb-std/src/contracts.rs`):
+
+Added three new public methods:
+1. `contract_witnesses(contract_id)` - Get all witnesses for a contract
+2. `contract_witness_ids(contract_id)` - Get all witness IDs (Bitcoin TXIDs)
+3. `contract_witness_count(contract_id)` - Get witness count (for genesis detection)
+
+**Final Implementation**: The `accept_consignment` function now fully supports:
+✅ Validates and imports consignments (both genesis and transfer)
+✅ Detects newly imported contracts
+✅ Returns contract ID
+✅ Distinguishes genesis from transfer (witness count check)
+✅ Extracts Bitcoin TX ID (from witness.id)
+✅ Determines confirmation status (from witness.status enum)
+
+**User Experience**: Complete. Users now see:
+- ✅ Import type: 🎁 Genesis or 💸 Transfer
+- ✅ Transaction status: ⏳ Pending or ✅ Confirmed
+- ✅ Bitcoin TX link to mempool explorer (for transfers)
+- ✅ Contextual success messages
+
+**Status Mappings**:
+```rust
+WitnessStatus::Genesis => "genesis_imported"
+WitnessStatus::Offchain => "offchain"
+WitnessStatus::Tentative => "pending"
+WitnessStatus::Mined(_) => "confirmed"
+WitnessStatus::Archived => "archived"
+```
+
+**Frontend Enhancements**:
+- Type badges with colors (blue for genesis, purple for transfer)
+- Status badges with colors (green for confirmed, yellow for pending)
+- Clickable Bitcoin TX links to mempool.space
+- Contextual success messages based on import type
+
+---
+
