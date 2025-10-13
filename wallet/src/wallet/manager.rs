@@ -205,6 +205,54 @@ impl WalletManager {
             }
         }
 
+        // Get all known contracts from RGB runtime (even with 0 balance)
+        // Note: Uses cached state for fast loading. Call sync_rgb_runtime() to update.
+        let mut known_contracts = Vec::new();
+        if let Ok(runtime) = self.get_runtime_no_sync(name) {
+            use hypersonic::StateName;
+            use std::str::FromStr;
+            
+            for contract_id in runtime.contracts.contract_ids() {
+                // Get contract state and articles
+                let state = runtime.contracts.contract_state(contract_id);
+                let articles = runtime.contracts.contract_articles(contract_id);
+                
+                // Extract ticker from immutable state (same as get_bound_assets)
+                let ticker = StateName::from_str("ticker")
+                    .ok()
+                    .and_then(|name| state.immutable.get(&name))
+                    .and_then(|states| states.first())
+                    .map(|s| s.data.verified.to_string())
+                    .unwrap_or_else(|| "N/A".to_string());
+                
+                // Extract name from immutable state or fallback to articles
+                let asset_name = StateName::from_str("name")
+                    .ok()
+                    .and_then(|name| state.immutable.get(&name))
+                    .and_then(|states| states.first())
+                    .map(|s| s.data.verified.to_string())
+                    .unwrap_or_else(|| articles.issue().meta.name.to_string());
+                
+                // Calculate total balance for this contract
+                let mut total_balance = 0u64;
+                for utxo in &balance.utxos {
+                    for asset in &utxo.bound_assets {
+                        if asset.asset_id == contract_id.to_string() {
+                            total_balance += asset.amount.parse::<u64>().unwrap_or(0);
+                        }
+                    }
+                }
+                
+                known_contracts.push(super::balance::KnownContract {
+                    contract_id: contract_id.to_string(),
+                    ticker,
+                    name: asset_name,
+                    balance: total_balance,
+                });
+            }
+        }
+        balance.known_contracts = known_contracts;
+
         Ok(balance)
     }
 
@@ -243,6 +291,31 @@ impl WalletManager {
             addresses_checked: GAP_LIMIT,
             new_transactions,
         })
+    }
+
+    /// Sync RGB runtime with blockchain to update contract states
+    /// This is separate from wallet sync and updates RGB-specific state
+    pub fn sync_rgb_runtime(
+        &self,
+        name: &str,
+    ) -> Result<(), crate::error::WalletError> {
+        eprintln!("🔄 Syncing RGB runtime for wallet: {}", name);
+        
+        if !self.storage.wallet_exists(name) {
+            return Err(crate::error::WalletError::WalletNotFound(name.to_string()));
+        }
+
+        let mut runtime = self.get_runtime_no_sync(name)?;
+        
+        // Quick sync with 1 confirmation (faster than default 32)
+        runtime.update(1)
+            .map_err(|e| {
+                eprintln!("❌ RGB sync failed: {:?}", e);
+                crate::error::WalletError::Rgb(format!("RGB sync failed: {:?}", e))
+            })?;
+        
+        eprintln!("✅ RGB runtime synced");
+        Ok(())
     }
 
     pub async fn create_utxo(
@@ -378,6 +451,110 @@ impl WalletManager {
             fee_sats,
         })
     }
+
+    pub async fn send_bitcoin(
+        &self,
+        name: &str,
+        request: SendBitcoinRequest,
+    ) -> Result<SendBitcoinResponse, crate::error::WalletError> {
+        eprintln!("🔍 send_bitcoin called for wallet={}, to={}, amount={}", name, request.to_address, request.amount_sats);
+        
+        if !self.storage.wallet_exists(name) {
+            return Err(crate::error::WalletError::WalletNotFound(name.to_string()));
+        }
+
+        // Parse destination address
+        let to_address = bitcoin::Address::from_str(&request.to_address)
+            .map_err(|e| crate::error::WalletError::InvalidInput(format!("Invalid address: {}", e)))?
+            .require_network(Network::Signet)
+            .map_err(|e| crate::error::WalletError::InvalidInput(format!("Address network mismatch: {}", e)))?;
+
+        let fee_rate = request.fee_rate_sat_vb.unwrap_or(2);
+        let balance = self.get_balance(name).await?;
+        
+        if balance.utxos.is_empty() {
+            return Err(crate::error::WalletError::InsufficientFunds(
+                "No UTXOs available to send Bitcoin".to_string()
+            ));
+        }
+
+        // Calculate total available (excluding RGB-occupied UTXOs)
+        let available_sats: u64 = balance.utxos.iter()
+            .filter(|u| !u.is_occupied && u.confirmations > 0)
+            .map(|u| u.amount_sats)
+            .sum();
+
+        let estimated_fee = fee_rate * 150; // Rough estimate for 1 input, 2 outputs
+        let total_needed = request.amount_sats + estimated_fee;
+
+        if available_sats < total_needed {
+            return Err(crate::error::WalletError::InsufficientFunds(
+                format!("Insufficient funds. Available: {} sats, needed: {} sats (including ~{} sats fee)", 
+                    available_sats, total_needed, estimated_fee)
+            ));
+        }
+
+        // Select UTXOs (simple first-fit)
+        let mut selected_utxos = Vec::new();
+        let mut selected_total = 0u64;
+        for utxo in balance.utxos.iter() {
+            if !utxo.is_occupied && utxo.confirmations > 0 {
+                selected_utxos.push(utxo.clone());
+                selected_total += utxo.amount_sats;
+                if selected_total >= total_needed {
+                    break;
+                }
+            }
+        }
+
+        if selected_total < total_needed {
+            return Err(crate::error::WalletError::InsufficientFunds(
+                "Could not select enough confirmed UTXOs".to_string()
+            ));
+        }
+
+        // Create change address
+        let descriptor = self.storage.load_descriptor(name)?;
+        let mut state = self.storage.load_state(name)?;
+        let mut change_index = 0;
+        while state.used_addresses.contains(&change_index) {
+            change_index += 1;
+        }
+        state.used_addresses.push(change_index);
+        let change_address = AddressManager::derive_address(&descriptor, change_index, Network::Signet)?;
+
+        // Build transaction
+        let tx_builder = super::transaction::TransactionBuilder::new(Network::Signet);
+        let tx = tx_builder.build_send_tx(
+            &selected_utxos,
+            to_address.clone(),
+            request.amount_sats,
+            change_address,
+            fee_rate,
+        )?;
+
+        // Sign transaction
+        let mnemonic = self.storage.load_mnemonic(name)?;
+        let signed_tx = self.sign_transaction_multi_key(tx, &selected_utxos, &mnemonic)?;
+
+        // Calculate actual fee
+        let total_input: u64 = selected_utxos.iter().map(|u| u.amount_sats).sum();
+        let total_output: u64 = signed_tx.output.iter().map(|o| o.value.to_sat()).sum();
+        let fee_sats = total_input - total_output;
+
+        // Broadcast
+        let txid = super::transaction::broadcast_transaction(&signed_tx, Network::Signet).await?;
+        eprintln!("✅ Bitcoin sent! txid={}", txid);
+
+        self.storage.save_state(name, &state)?;
+
+        Ok(SendBitcoinResponse {
+            txid,
+            amount_sats: request.amount_sats,
+            fee_sats,
+            to_address: request.to_address,
+        })
+    }
     
     /// Helper method to initialize RGB Runtime for a wallet (used by transfer APIs)
     pub(crate) fn get_runtime(
@@ -487,28 +664,58 @@ impl WalletManager {
         let contract_id = ContractId::from_str(&request.contract_id)
             .map_err(|e| crate::error::WalletError::InvalidInput(format!("Invalid contract ID: {}", e)))?;
         
+        // Check if wallet has any UTXOs before attempting invoice generation
+        eprintln!("🔍 Checking if wallet has UTXOs...");
+        let balance = self.get_balance(wallet_name).await?;
+        if balance.utxos.is_empty() {
+            eprintln!("❌ No UTXOs found - cannot generate invoice without Bitcoin");
+            return Err(crate::error::WalletError::InvalidInput(
+                "This wallet needs Bitcoin UTXOs to generate an invoice. Please:\n\
+                 1. Click 'Receive Bitcoin' to get your wallet address\n\
+                 2. Send Bitcoin from a faucet or another wallet\n\
+                 3. Wait for confirmation\n\
+                 4. Then try generating the invoice again".to_string()
+            ));
+        }
+        eprintln!("✅ Found {} UTXO(s)", balance.utxos.len());
+        
+        eprintln!("🔄 Initializing runtime (no sync)...");
         // Initialize RGB Runtime (try without sync first for speed)
         let mut runtime = self.get_runtime_no_sync(wallet_name)?;
+        eprintln!("✅ Runtime initialized");
         
         // Generate auth token (blinded seal) from available UTXO
         let nonce = 0u64;  // Default nonce
+        eprintln!("🔄 Attempting to get auth_token...");
         let auth = match runtime.auth_token(Some(nonce)) {
-            Some(token) => token,
+            Some(token) => {
+                eprintln!("✅ Auth token generated without sync");
+                token
+            },
             None => {
-                // No UTXOs available, need to sync with blockchain
-                // This happens on first run or if UTXOs changed
-                // Using 1 confirmation instead of 32 for faster response on signet/testnet
-                // TODO: For mainnet, consider 3-6 confirmations for security
+                eprintln!("⚠️ No auth token available, syncing RGB runtime with wallet UTXOs...");
+                // UTXOs exist but RGB runtime doesn't know about them yet
+                // Quick sync to register the UTXOs with RGB runtime
+                eprintln!("🔄 Syncing RGB runtime (1 confirmation)...");
                 runtime.update(1)
-                    .map_err(|e| crate::error::WalletError::Rgb(format!("Sync failed: {:?}", e)))?;
+                    .map_err(|e| {
+                        eprintln!("❌ Sync failed: {:?}", e);
+                        crate::error::WalletError::Rgb(format!("RGB sync failed: {:?}", e))
+                    })?;
+                eprintln!("✅ Sync completed");
                 
                 // Try again after sync
+                eprintln!("🔄 Attempting to get auth_token after sync...");
                 runtime.auth_token(Some(nonce))
-                    .ok_or_else(|| crate::error::WalletError::Rgb(
-                        "No unspent outputs available for seal even after sync. Please create a UTXO first.".to_string()
-                    ))?
+                    .ok_or_else(|| {
+                        eprintln!("❌ Failed to create auth token even after sync");
+                        crate::error::WalletError::Rgb(
+                            "Failed to create invoice seal. Try using the 'Create UTXO' button first.".to_string()
+                        )
+                    })?
             }
         };
+        eprintln!("✅ Auth token obtained");
         
         // Use native RGB invoice API with uri feature
         use rgb_invoice::{RgbInvoice, RgbBeneficiary};
@@ -550,34 +757,52 @@ impl WalletManager {
         invoice_str: &str,
         fee_rate_sat_vb: Option<u64>,
     ) -> Result<SendTransferResponse, crate::error::WalletError> {
+        eprintln!("🔍 send_transfer called for wallet={}", wallet_name);
+        eprintln!("📝 Invoice: {}", invoice_str);
+        
         use bpstd::psbt::{TxParams, PsbtConstructor};
         use bpstd::Sats;
         use rgb_invoice::RgbInvoice;
         use rgbp::CoinselectStrategy;
         
         // Parse invoice using native RGB uri feature
+        eprintln!("🔄 Parsing invoice...");
         let invoice = RgbInvoice::<rgb::ContractId>::from_str(invoice_str)
-            .map_err(|e| crate::error::WalletError::InvalidInput(format!("Invalid invoice: {}", e)))?;
+            .map_err(|e| {
+                eprintln!("❌ Invalid invoice: {}", e);
+                crate::error::WalletError::InvalidInput(format!("Invalid invoice: {}", e))
+            })?;
+        eprintln!("✅ Invoice parsed successfully");
         
-        // Initialize RGB runtime
-        let mut runtime = self.get_runtime(wallet_name)?;
+        // Initialize RGB runtime WITHOUT sync (faster, wallet should already be synced)
+        eprintln!("🔄 Initializing RGB runtime (no sync)...");
+        let mut runtime = self.get_runtime_no_sync(wallet_name)?;
+        eprintln!("✅ Runtime initialized");
         
         // Set fee rate (default 1 sat/vB if not provided)
         let fee_sats = fee_rate_sat_vb.unwrap_or(1) * 250; // Rough estimate for typical RGB tx size
         let tx_params = TxParams::with(Sats::from(fee_sats));
+        eprintln!("💰 Fee: {} sats", fee_sats);
         
         // Use aggregate coinselect strategy (same as RGB CLI default)
         let strategy = CoinselectStrategy::Aggregate;
         
         // Pay invoice - this returns PSBT and Payment
         // Note: pay_invoice internally handles DBC commit
+        eprintln!("🔄 Creating payment from invoice...");
         let (mut psbt, payment) = runtime.pay_invoice(&invoice, strategy, tx_params, None)
-            .map_err(|e| crate::error::WalletError::Rgb(format!("Failed to create payment: {:?}", e)))?;
+            .map_err(|e| {
+                eprintln!("❌ Failed to create payment: {:?}", e);
+                crate::error::WalletError::Rgb(format!("Failed to create payment: {:?}", e))
+            })?;
+        eprintln!("✅ Payment created");
         
         // Extract contract ID from invoice scope
         let contract_id = invoice.scope;
+        eprintln!("📝 Contract ID: {}", contract_id);
         
         // Generate consignment BEFORE signing
+        eprintln!("🔄 Creating consignment file...");
         let consignment_dir = self.storage.base_dir().join("consignments");
         std::fs::create_dir_all(&consignment_dir)
             .map_err(|e| crate::error::WalletError::Internal(format!("Failed to create consignments dir: {}", e)))?;
@@ -591,27 +816,44 @@ impl WalletManager {
         
         runtime.contracts
             .consign_to_file(&consignment_path, contract_id, payment.terminals)
-            .map_err(|e| crate::error::WalletError::Rgb(format!("Failed to create consignment: {:?}", e)))?;
+            .map_err(|e| {
+                eprintln!("❌ Failed to create consignment: {:?}", e);
+                crate::error::WalletError::Rgb(format!("Failed to create consignment: {:?}", e))
+            })?;
+        eprintln!("✅ Consignment created: {}", consignment_filename);
         
         // Sign the PSBT using our wallet signer
+        eprintln!("🔄 Signing PSBT...");
         let signer = self.create_signer(wallet_name)?;
         let signed_count = psbt.sign(&signer)
-            .map_err(|e| crate::error::WalletError::Rgb(format!("Failed to approve signing: {:?}", e)))?;
+            .map_err(|e| {
+                eprintln!("❌ Failed to sign: {:?}", e);
+                crate::error::WalletError::Rgb(format!("Failed to approve signing: {:?}", e))
+            })?;
+        eprintln!("✅ Signed {} inputs", signed_count);
         
         if signed_count == 0 {
+            eprintln!("❌ No inputs were signed!");
             return Err(crate::error::WalletError::Rgb("Failed to sign any inputs".into()));
         }
         
         // Finalize the PSBT with wallet descriptor
+        eprintln!("🔄 Finalizing PSBT...");
         let finalized_count = psbt.finalize(runtime.wallet.descriptor());
+        eprintln!("✅ Finalized {} inputs", finalized_count);
         
         if finalized_count == 0 {
+            eprintln!("❌ No inputs were finalized!");
             return Err(crate::error::WalletError::Rgb("Failed to finalize any inputs".into()));
         }
         
         // Extract the signed transaction
+        eprintln!("🔄 Extracting transaction...");
         let bpstd_tx = psbt.extract()
-            .map_err(|e| crate::error::WalletError::Rgb(format!("Failed to extract transaction: {} non-finalized inputs remain", e.0)))?;
+            .map_err(|e| {
+                eprintln!("❌ Failed to extract: {} non-finalized inputs remain", e.0);
+                crate::error::WalletError::Rgb(format!("Failed to extract transaction: {} non-finalized inputs remain", e.0))
+            })?;
         
         // Convert bpstd::Tx to hex string using :x format specifier
         // bpstd::Tx implements Display with :x formatting
@@ -619,9 +861,14 @@ impl WalletManager {
         
         // Get txid from bpstd::Tx
         let txid = bpstd_tx.txid().to_string();
+        eprintln!("✅ Transaction extracted, txid: {}", txid);
         
         // Broadcast transaction
+        eprintln!("🔄 Broadcasting transaction...");
         self.broadcast_tx_hex(&tx_hex)?;
+        eprintln!("✅ Transaction broadcast successful!");
+        
+        // Note: Frontend will call sync-rgb endpoint after transfer to update balance
         
         // Return response
         Ok(SendTransferResponse {
@@ -703,6 +950,8 @@ impl WalletManager {
     ) -> Result<crate::api::types::AcceptConsignmentResponse, crate::error::WalletError> {
         use std::io::Write;
 
+        eprintln!("🔍 accept_consignment called for wallet={}, size={} bytes", wallet_name, consignment_bytes.len());
+
         // 1. Save consignment to temp file
         let temp_dir = self.storage.base_dir().join("temp_consignments");
         std::fs::create_dir_all(&temp_dir)
@@ -716,25 +965,34 @@ impl WalletManager {
         file.write_all(&consignment_bytes)
             .map_err(|e| crate::error::WalletError::Internal(format!("Failed to write consignment: {}", e)))?;
         drop(file);
+        eprintln!("✅ Temp file created: {:?}", temp_path);
 
-        // 2. Initialize runtime
-        let mut runtime = self.get_runtime(wallet_name)?;
+        // 2. Initialize runtime (no sync needed for import)
+        eprintln!("🔄 Initializing runtime (no sync)...");
+        let mut runtime = self.get_runtime_no_sync(wallet_name)?;
+        eprintln!("✅ Runtime initialized");
 
         // 3. Get contract IDs before importing
         let contract_ids_before: std::collections::HashSet<String> = runtime.contracts
             .contract_ids()
             .map(|id| id.to_string())
             .collect();
+        eprintln!("✅ Got {} existing contracts", contract_ids_before.len());
 
         // 4. Consume consignment (validates and imports)
+        eprintln!("🔄 Calling consume_from_file...");
         use std::convert::Infallible;
         runtime.consume_from_file(
             true,  // allow_unknown contracts
             &temp_path,
             |_, _, _| Result::<_, Infallible>::Ok(()),
-        ).map_err(|e| crate::error::WalletError::Rgb(format!("Validation failed: {:?}", e)))?;
+        ).map_err(|e| {
+            eprintln!("❌ consume_from_file failed: {:?}", e);
+            crate::error::WalletError::Rgb(format!("Validation failed: {:?}", e))
+        })?;
+        eprintln!("✅ consume_from_file succeeded");
 
-        // 5. Find new contract(s) that were imported
+        // 5. Find new or existing contract(s) that were imported
         let contract_ids_after: std::collections::HashSet<String> = runtime.contracts
             .contract_ids()
             .map(|id| id.to_string())
@@ -744,11 +1002,24 @@ impl WalletManager {
             .difference(&contract_ids_before)
             .cloned()
             .collect();
+        eprintln!("✅ Found {} new contracts", new_contracts.len());
 
-        // Get first new contract as the imported one (usually only one)
-        let contract_id_str = new_contracts.first()
-            .ok_or_else(|| crate::error::WalletError::Rgb("No new contract found after import".into()))?
-            .clone();
+        // Determine which contract was imported
+        let contract_id_str = if !new_contracts.is_empty() {
+            // Case 1: New contract imported
+            new_contracts.first().unwrap().clone()
+        } else if contract_ids_after.len() == 1 {
+            // Case 2: Re-importing into wallet with 1 contract (likely the same one)
+            contract_ids_after.iter().next().unwrap().clone()
+        } else {
+            // Case 3: Can't determine which contract - need to parse the consignment file
+            // For now, return an error with helpful message
+            return Err(crate::error::WalletError::Rgb(
+                format!("Contract already exists. Wallet has {} contracts. Cannot determine which was updated.", 
+                    contract_ids_after.len())
+            ));
+        };
+        eprintln!("✅ Imported contract: {}", contract_id_str);
 
         // Parse contract ID for querying
         let contract_id = rgb::ContractId::from_str(&contract_id_str)
@@ -757,7 +1028,9 @@ impl WalletManager {
         // 6. Query imported contract to determine type and extract witness info
         use rgb::WitnessStatus;
 
+        eprintln!("🔄 Querying witness count...");
         let witness_count = runtime.contracts.contract_witness_count(contract_id);
+        eprintln!("✅ Witness count: {}", witness_count);
 
         let (import_type, bitcoin_txid, status) = if witness_count == 0 {
             // Genesis: no witnesses (no Bitcoin TX)
@@ -810,31 +1083,41 @@ impl WalletManager {
     ) -> Result<crate::api::types::ExportGenesisResponse, crate::error::WalletError> {
         use std::str::FromStr;
 
+        eprintln!("🔍 export_genesis_consignment called for wallet={}, contract={}", wallet_name, contract_id_str);
+
         // 1. Parse contract ID
         let contract_id = rgb::ContractId::from_str(contract_id_str)
             .map_err(|e| crate::error::WalletError::Rgb(format!("Invalid contract ID: {:?}", e)))?;
 
-        // 2. Initialize runtime to access contracts
-        let runtime = self.get_runtime(wallet_name)?;
+        eprintln!("✅ Contract ID parsed successfully");
+
+        // 2. Initialize runtime WITHOUT blockchain sync (we're just reading state)
+        let runtime = self.get_runtime_no_sync(wallet_name)?;
+        eprintln!("✅ Runtime initialized (no sync)");
 
         // 3. Verify we have this contract
         if !runtime.contracts.has_contract(contract_id) {
+            eprintln!("❌ Contract not found");
             return Err(crate::error::WalletError::Rgb(
                 format!("Contract {} not found in wallet", contract_id)
             ));
         }
+        eprintln!("✅ Contract exists in runtime");
 
         // 4. Get contract state to verify we have allocations
         let state = runtime.contracts.contract_state(contract_id);
+        eprintln!("✅ Got contract state");
 
         // Check if we have any owned states (just for validation)
         let has_allocations = state.owned.values().any(|states| !states.is_empty());
         
         if !has_allocations {
+            eprintln!("❌ No allocations found");
             return Err(crate::error::WalletError::Rgb(
                 "No allocations found for contract".to_string()
             ));
         }
+        eprintln!("✅ Has allocations");
 
         // 5. Create consignment directory
         let consignment_filename = format!("genesis_{}.rgbc", contract_id);
@@ -846,16 +1129,29 @@ impl WalletManager {
             ))?;
 
         let consignment_path = exports_dir.join(&consignment_filename);
+        eprintln!("✅ Export path: {:?}", consignment_path);
 
-        // 6. Export genesis consignment (empty terminals for genesis-only export)
-        // For genesis consignment, we're exporting the contract state without
-        // transferring to new seals - the recipient will already own the UTXOs
-        let empty_terminals: Vec<rgb::AuthToken> = Vec::new();
+        // Remove existing file if present (allow re-export)
+        if consignment_path.exists() {
+            std::fs::remove_file(&consignment_path)
+                .map_err(|e| crate::error::WalletError::Internal(
+                    format!("Failed to remove existing export file: {}", e)
+                ))?;
+            eprintln!("🗑️  Removed existing file");
+        }
+
+        // 6. Export complete contract state (no terminals needed)
+        // Uses export() instead of consign() - exports all state without requiring destinations
+        eprintln!("🔄 Calling export_to_file...");
         runtime.contracts
-            .consign_to_file(&consignment_path, contract_id, empty_terminals)
-            .map_err(|e| crate::error::WalletError::Rgb(
-                format!("Failed to create genesis consignment: {:?}", e)
-            ))?;
+            .export_to_file(&consignment_path, contract_id)
+            .map_err(|e| {
+                eprintln!("❌ export_to_file failed: {:?}", e);
+                crate::error::WalletError::Rgb(
+                    format!("Failed to export genesis consignment: {:?}", e)
+                )
+            })?;
+        eprintln!("✅ export_to_file succeeded");
 
         // 7. Get file size
         let file_size = std::fs::metadata(&consignment_path)
@@ -924,6 +1220,21 @@ pub struct CreateUtxoResult {
     pub amount_sats: u64,
     pub fee_sats: u64,
     pub target_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendBitcoinRequest {
+    pub to_address: String,
+    pub amount_sats: u64,
+    pub fee_rate_sat_vb: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendBitcoinResponse {
+    pub txid: String,
+    pub amount_sats: u64,
+    pub fee_sats: u64,
+    pub to_address: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

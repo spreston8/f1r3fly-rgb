@@ -12,6 +12,8 @@ import type {
   CreateUtxoResponse,
   UnlockUtxoRequest,
   UnlockUtxoResponse,
+  SendBitcoinRequest,
+  SendBitcoinResponse,
   IssueAssetRequest,
   IssueAssetResponse,
   GenerateInvoiceRequest,
@@ -84,6 +86,13 @@ export const walletApi = {
   },
 
   /**
+   * Sync RGB runtime with blockchain (updates RGB contract states)
+   */
+  syncRgb: async (name: string): Promise<void> => {
+    await apiClient.post(`/wallet/${name}/sync-rgb`);
+  },
+
+  /**
    * Create a new RGB-compatible UTXO
    */
   createUtxo: async (
@@ -106,6 +115,20 @@ export const walletApi = {
   ): Promise<UnlockUtxoResponse> => {
     const response = await apiClient.post<UnlockUtxoResponse>(
       `/wallet/${name}/unlock-utxo`,
+      request
+    );
+    return response.data;
+  },
+
+  /**
+   * Send Bitcoin to an address
+   */
+  sendBitcoin: async (
+    name: string,
+    request: SendBitcoinRequest
+  ): Promise<SendBitcoinResponse> => {
+    const response = await apiClient.post<SendBitcoinResponse>(
+      `/wallet/${name}/send-bitcoin`,
       request
     );
     return response.data;

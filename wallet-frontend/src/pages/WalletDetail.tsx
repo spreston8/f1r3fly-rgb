@@ -11,6 +11,7 @@ import GenerateInvoiceModal from '../components/GenerateInvoiceModal';
 import SendTransferModal from '../components/SendTransferModal';
 import AcceptConsignmentModal from '../components/AcceptConsignmentModal';
 import ExportGenesisModal from '../components/ExportGenesisModal';
+import SendBitcoinModal from '../components/SendBitcoinModal';
 import { copyToClipboard } from '../utils/format';
 
 export default function WalletDetail() {
@@ -31,6 +32,7 @@ export default function WalletDetail() {
   const [showSendTransferModal, setShowSendTransferModal] = useState(false);
   const [showAcceptConsignmentModal, setShowAcceptConsignmentModal] = useState(false);
   const [showExportGenesisModal, setShowExportGenesisModal] = useState(false);
+  const [showSendBitcoinModal, setShowSendBitcoinModal] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<{ contractId: string; ticker: string } | null>(null);
   const [selectedAssetForExport, setSelectedAssetForExport] = useState<{ contractId: string; ticker: string } | null>(null);
 
@@ -165,6 +167,12 @@ export default function WalletDetail() {
             📥 Import Consignment
           </button>
           <button
+            onClick={() => setShowSendBitcoinModal(true)}
+            className="px-4 py-2 bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 text-white rounded-md transition-colors font-medium"
+          >
+            💸 Send Bitcoin
+          </button>
+          <button
             onClick={() => setShowCreateUtxoModal(true)}
             className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium"
           >
@@ -194,93 +202,81 @@ export default function WalletDetail() {
       )}
 
       {/* RGB Assets Section */}
-      {balance && (() => {
-        // Extract unique RGB assets from all occupied UTXOs
-        const assetMap = new Map<string, { contractId: string; ticker: string; name: string; totalAmount: bigint }>();
-        
-        balance.utxos.forEach(utxo => {
-          if (utxo.is_occupied && utxo.bound_assets) {
-            utxo.bound_assets.forEach(asset => {
-              const existing = assetMap.get(asset.asset_id);
-              const amount = BigInt(asset.amount);
-              
-              if (existing) {
-                existing.totalAmount += amount;
-              } else {
-                assetMap.set(asset.asset_id, {
-                  contractId: asset.asset_id,
-                  ticker: asset.ticker,
-                  name: asset.asset_name,
-                  totalAmount: amount
-                });
-              }
-            });
-          }
-        });
-
-        const uniqueAssets = Array.from(assetMap.values());
-
-        if (uniqueAssets.length === 0) return null;
-
-        return (
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-900 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-              🪙 RGB Assets
-            </h3>
-            <div className="space-y-3">
-              {uniqueAssets.map((asset) => (
-                <div
-                  key={asset.contractId}
-                  className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600"
-                >
+      {balance && balance.known_contracts && balance.known_contracts.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-900 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+            🪙 RGB Assets
+          </h3>
+          <div className="space-y-3">
+            {balance.known_contracts.map((contract) => (
+              <div
+                key={contract.contract_id}
+                className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600"
+              >
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <span className="px-2 py-1 bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-300 text-xs font-semibold rounded">
-                        {asset.ticker}
+                        {contract.ticker}
                       </span>
                       <h4 className="font-medium text-gray-900 dark:text-white">
-                        {asset.name}
+                        {contract.name}
                       </h4>
+                      {contract.balance === 0 && (
+                        <span className="px-2 py-1 bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 text-xs rounded">
+                          Known Contract
+                        </span>
+                      )}
                     </div>
                     <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                      Balance: {asset.totalAmount.toString()}
+                      Balance: {contract.balance.toString()}
                     </p>
+                    {contract.balance === 0 && (
+                      <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
+                        ℹ️ Need Bitcoin UTXOs to receive tokens
+                      </p>
+                    )}
                     <p className="text-xs text-gray-500 dark:text-gray-500 mt-1 font-mono">
-                      {asset.contractId}
+                      {contract.contract_id}
                     </p>
                   </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setShowSendTransferModal(true)}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white rounded-md transition-colors font-medium text-sm"
-                    >
-                      📤 Send
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSelectedAsset({ contractId: asset.contractId, ticker: asset.ticker });
-                        setShowGenerateInvoiceModal(true);
-                      }}
-                      className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium text-sm"
-                    >
-                      📨 Receive
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSelectedAssetForExport({ contractId: asset.contractId, ticker: asset.ticker });
-                        setShowExportGenesisModal(true);
-                      }}
-                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-md transition-colors font-medium text-sm"
-                    >
-                      📦 Export
-                    </button>
-                  </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowSendTransferModal(true)}
+                    disabled={contract.balance === 0}
+                    className={`px-4 py-2 ${
+                      contract.balance === 0
+                        ? 'bg-gray-400 dark:bg-gray-600 cursor-not-allowed'
+                        : 'bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600'
+                    } text-white rounded-md transition-colors font-medium text-sm`}
+                    title={contract.balance === 0 ? 'No balance to send' : 'Send tokens'}
+                  >
+                    📤 Send
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedAsset({ contractId: contract.contract_id, ticker: contract.ticker });
+                      setShowGenerateInvoiceModal(true);
+                    }}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium text-sm"
+                    title={contract.balance === 0 ? "Note: You'll need Bitcoin UTXOs to generate an invoice" : "Generate an invoice to receive tokens"}
+                  >
+                    📨 Receive
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedAssetForExport({ contractId: contract.contract_id, ticker: contract.ticker });
+                      setShowExportGenesisModal(true);
+                    }}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-md transition-colors font-medium text-sm"
+                  >
+                    📦 Export
+                  </button>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
-        );
-      })()}
+        </div>
+      )}
 
       {balance && balance.utxos.length > 0 && (
         <UTXOList 
@@ -447,6 +443,16 @@ export default function WalletDetail() {
           }}
         />
       )}
+
+      <SendBitcoinModal
+        walletName={name || ''}
+        isOpen={showSendBitcoinModal}
+        onClose={() => setShowSendBitcoinModal(false)}
+        onSuccess={() => {
+          setShowSendBitcoinModal(false);
+          loadWalletData();
+        }}
+      />
     </div>
   );
 }

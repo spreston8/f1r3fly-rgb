@@ -155,6 +155,7 @@ impl BalanceChecker {
             unconfirmed_sats,
             utxo_count: all_utxos.len(),
             utxos: all_utxos,
+            known_contracts: Vec::new(),
         })
     }
 }
@@ -174,10 +175,19 @@ pub struct UTXO {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownContract {
+    pub contract_id: String,
+    pub ticker: String,
+    pub name: String,
+    pub balance: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceInfo {
     pub confirmed_sats: u64,
     pub unconfirmed_sats: u64,
     pub utxo_count: usize,
     pub utxos: Vec<UTXO>,
+    pub known_contracts: Vec<KnownContract>,
 }
 

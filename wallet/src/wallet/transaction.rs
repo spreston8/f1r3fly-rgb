@@ -80,6 +80,64 @@ impl TransactionBuilder {
         Ok(tx)
     }
 
+    pub fn build_send_tx(
+        &self,
+        utxos: &[UTXO],
+        to_address: Address,
+        amount_sats: u64,
+        change_address: Address,
+        fee_rate_sat_vb: u64,
+    ) -> Result<Transaction, crate::error::WalletError> {
+        let total_input: u64 = utxos.iter().map(|u| u.amount_sats).sum();
+        let estimated_size = self.estimate_tx_size(utxos.len(), 2); // 2 outputs (to + change)
+        let fee = estimated_size * fee_rate_sat_vb;
+
+        if total_input < amount_sats + fee {
+            return Err(crate::error::WalletError::InsufficientFunds(
+                format!("Need {} sats (amount + fee), but only have {} sats", amount_sats + fee, total_input)
+            ));
+        }
+
+        let change_amount = total_input - amount_sats - fee;
+
+        let mut tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+
+        // Add inputs
+        for utxo in utxos {
+            tx.input.push(TxIn {
+                previous_output: OutPoint {
+                    txid: utxo.txid.parse()
+                        .map_err(|e| crate::error::WalletError::Bitcoin(format!("Invalid txid: {}", e)))?,
+                    vout: utxo.vout,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            });
+        }
+
+        // Add payment output
+        tx.output.push(TxOut {
+            value: bitcoin::Amount::from_sat(amount_sats),
+            script_pubkey: to_address.script_pubkey(),
+        });
+
+        // Add change output if above dust limit
+        if change_amount >= 546 {
+            tx.output.push(TxOut {
+                value: bitcoin::Amount::from_sat(change_amount),
+                script_pubkey: change_address.script_pubkey(),
+            });
+        }
+
+        Ok(tx)
+    }
+
     pub fn build_unlock_utxo_tx(
         &self,
         utxo: &UTXO,

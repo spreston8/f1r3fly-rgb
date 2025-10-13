@@ -57,11 +57,19 @@ export interface UTXO {
   bound_assets: BoundAsset[];
 }
 
+export interface KnownContract {
+  contract_id: string;
+  ticker: string;
+  name: string;
+  balance: number;
+}
+
 export interface BalanceInfo {
   confirmed_sats: number;
   unconfirmed_sats: number;
   utxo_count: number;
   utxos: UTXO[];
+  known_contracts: KnownContract[];
 }
 
 export interface SyncResult {
@@ -87,6 +95,19 @@ export interface UnlockUtxoResponse {
   txid: string;
   recovered_sats: number;
   fee_sats: number;
+}
+
+export interface SendBitcoinRequest {
+  to_address: string;
+  amount_sats: number;
+  fee_rate_sat_vb?: number;
+}
+
+export interface SendBitcoinResponse {
+  txid: string;
+  amount_sats: number;
+  fee_sats: number;
+  to_address: string;
 }
 
 export interface IssueAssetRequest {

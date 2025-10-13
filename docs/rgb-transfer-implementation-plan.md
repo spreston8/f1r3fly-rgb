@@ -1408,7 +1408,7 @@ impl WalletManager {
         
         // 6. Check Bitcoin TX status (if not genesis-only import)
         let status = if !is_genesis {
-            let tx_status = self.check_tx_status(&bitcoin_txid)?;
+        let tx_status = self.check_tx_status(&bitcoin_txid)?;
             if tx_status.confirmed { "confirmed" } else { "pending" }
         } else {
             "genesis_imported"

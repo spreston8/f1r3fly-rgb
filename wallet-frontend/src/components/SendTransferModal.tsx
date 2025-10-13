@@ -32,6 +32,12 @@ export default function SendTransferModal({
 
       const response = await walletApi.sendTransfer(walletName, request);
       setResult(response);
+      
+      // Auto-sync RGB runtime in background to update balance
+      // Don't await or block UI on this
+      walletApi.syncRgb(walletName).catch(err => {
+        console.warn('RGB sync after transfer failed:', err);
+      });
     } catch (err: unknown) {
       const message = err && typeof err === 'object' && 'response' in err
         ? (err as { response?: { data?: { error?: string } }; message?: string }).response?.data?.error 

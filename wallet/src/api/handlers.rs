@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::wallet::manager::{AddressInfo, NextAddressInfo, SyncResult, WalletInfo, WalletManager, WalletMetadata};
 use crate::wallet::balance::BalanceInfo;
 use crate::wallet::rgb::{IssueAssetRequest, IssueAssetResponse};
-use super::types::{CreateWalletRequest, ImportWalletRequest, CreateUtxoRequest, CreateUtxoResponse, UnlockUtxoRequest, UnlockUtxoResponse, GenerateInvoiceRequest, GenerateInvoiceResponse, SendTransferRequest, SendTransferResponse, AcceptConsignmentResponse, ExportGenesisResponse};
+use super::types::{CreateWalletRequest, ImportWalletRequest, CreateUtxoRequest, CreateUtxoResponse, UnlockUtxoRequest, UnlockUtxoResponse, SendBitcoinRequest, SendBitcoinResponse, GenerateInvoiceRequest, GenerateInvoiceResponse, SendTransferRequest, SendTransferResponse, AcceptConsignmentResponse, ExportGenesisResponse};
 
 pub async fn create_wallet_handler(
     State(manager): State<Arc<WalletManager>>,
@@ -76,6 +76,14 @@ pub async fn sync_wallet_handler(
     Ok(Json(result))
 }
 
+pub async fn sync_rgb_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(name): Path<String>,
+) -> Result<Json<()>, crate::error::WalletError> {
+    manager.sync_rgb_runtime(&name)?;
+    Ok(Json(()))
+}
+
 pub async fn create_utxo_handler(
     State(manager): State<Arc<WalletManager>>,
     Path(name): Path<String>,
@@ -113,6 +121,27 @@ pub async fn unlock_utxo_handler(
         txid: result.txid,
         recovered_sats: result.recovered_sats,
         fee_sats: result.fee_sats,
+    }))
+}
+
+pub async fn send_bitcoin_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(name): Path<String>,
+    Json(req): Json<SendBitcoinRequest>,
+) -> Result<Json<SendBitcoinResponse>, crate::error::WalletError> {
+    let manager_req = crate::wallet::manager::SendBitcoinRequest {
+        to_address: req.to_address,
+        amount_sats: req.amount_sats,
+        fee_rate_sat_vb: req.fee_rate_sat_vb,
+    };
+    
+    let result = manager.send_bitcoin(&name, manager_req).await?;
+    
+    Ok(Json(SendBitcoinResponse {
+        txid: result.txid,
+        amount_sats: result.amount_sats,
+        fee_sats: result.fee_sats,
+        to_address: result.to_address,
     }))
 }
 
@@ -158,12 +187,18 @@ pub async fn send_transfer_handler(
     Path(wallet_name): Path<String>,
     Json(request): Json<SendTransferRequest>,
 ) -> Result<Json<SendTransferResponse>, crate::error::WalletError> {
+    eprintln!("📨 send_transfer_handler called for wallet: {}", wallet_name);
+    
     let result = manager.send_transfer(
         &wallet_name,
         &request.invoice,
         request.fee_rate_sat_vb,
-    )?;
+    ).map_err(|e| {
+        eprintln!("❌ send_transfer failed: {:?}", e);
+        e
+    })?;
     
+    eprintln!("✅ send_transfer_handler succeeded");
     Ok(Json(SendTransferResponse {
         bitcoin_txid: result.bitcoin_txid,
         consignment_download_url: result.consignment_download_url,

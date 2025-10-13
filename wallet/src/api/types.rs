@@ -39,6 +39,21 @@ pub struct UnlockUtxoResponse {
     pub fee_sats: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SendBitcoinRequest {
+    pub to_address: String,
+    pub amount_sats: u64,
+    pub fee_rate_sat_vb: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SendBitcoinResponse {
+    pub txid: String,
+    pub amount_sats: u64,
+    pub fee_sats: u64,
+    pub to_address: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GenerateInvoiceRequest {
     pub contract_id: String,

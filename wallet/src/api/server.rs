@@ -28,8 +28,10 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
             get(handlers::get_balance_handler),
         )
         .route("/api/wallet/:name/sync", post(handlers::sync_wallet_handler))
+        .route("/api/wallet/:name/sync-rgb", post(handlers::sync_rgb_handler))
         .route("/api/wallet/:name/create-utxo", post(handlers::create_utxo_handler))
         .route("/api/wallet/:name/unlock-utxo", post(handlers::unlock_utxo_handler))
+        .route("/api/wallet/:name/send-bitcoin", post(handlers::send_bitcoin_handler))
         .route("/api/wallet/:name/issue-asset", post(handlers::issue_asset_handler))
         .route("/api/wallet/:name/generate-invoice", post(handlers::generate_invoice_handler))
         .route("/api/wallet/:name/send-transfer", post(handlers::send_transfer_handler))
