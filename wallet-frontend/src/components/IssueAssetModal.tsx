@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { walletApi } from '../api/wallet';
-import type { UTXO, IssueAssetRequest, IssueAssetResponse } from '../api/types';
+import type { UTXO, IssueAssetRequest, IssueAssetResponse, IssueAssetResponseWithFirefly } from '../api/types';
 import { PRECISION_OPTIONS } from '../api/types';
 
 interface IssueAssetModalProps {
@@ -24,9 +24,11 @@ export default function IssueAssetModal({
   const [precision, setPrecision] = useState(8); // Default to BTC-like precision
   const [supply, setSupply] = useState('');
   const [selectedUtxo, setSelectedUtxo] = useState('');
+  const [useFirefly, setUseFirefly] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<IssueAssetResponse | null>(null);
+  const [fireflyResult, setFireflyResult] = useState<IssueAssetResponseWithFirefly | null>(null);
   const [copied, setCopied] = useState(false);
 
   // Validation errors
@@ -81,6 +83,7 @@ export default function IssueAssetModal({
 
     setIsLoading(true);
     setError(null);
+    setFireflyResult(null);
 
     try {
       const request: IssueAssetRequest = {
@@ -91,10 +94,22 @@ export default function IssueAssetModal({
         genesis_utxo: selectedUtxo,
       };
 
-      const response = await walletApi.issueAsset(walletName, request);
-      setSuccess(response);
-    } catch (err: any) {
-      setError(err.response?.data?.error || err.message || 'Failed to issue asset');
+      if (useFirefly) {
+        // Use F1r3fly/Rholang execution
+        const response = await walletApi.issueAssetWithFirefly(walletName, request);
+        setFireflyResult(response);
+        setSuccess({
+          contract_id: response.contract_id,
+          genesis_seal: response.genesis_seal,
+        });
+      } else {
+        // Use standard ALuVM execution
+        const response = await walletApi.issueAsset(walletName, request);
+        setSuccess(response);
+      }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } }; message?: string };
+      setError(error.response?.data?.error || error.message || 'Failed to issue asset');
     } finally {
       setIsLoading(false);
     }
@@ -110,8 +125,10 @@ export default function IssueAssetModal({
       setPrecision(8);
       setSupply('');
       setSelectedUtxo('');
+      setUseFirefly(false);
       setError(null);
       setSuccess(null);
+      setFireflyResult(null);
       setNameError('');
       setTickerError('');
       setSupplyError('');
@@ -167,6 +184,20 @@ export default function IssueAssetModal({
                 {success.genesis_seal}
               </code>
             </div>
+
+            {fireflyResult && (
+              <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 mb-4">
+                <div className="text-sm text-gray-600 dark:text-gray-400 mb-2">F1r3fly</div>
+                <div className="space-y-1">
+                  <div className="text-xs text-gray-700 dark:text-gray-300">
+                    Deploy: <code className="text-gray-800 dark:text-gray-200">{fireflyResult.firefly_deploy_id.substring(0, 16)}...</code>
+                  </div>
+                  <div className="text-xs text-gray-700 dark:text-gray-300">
+                    Block: <code className="text-gray-800 dark:text-gray-200">{fireflyResult.firefly_block_hash.substring(0, 16)}...</code>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-md">
               <p className="text-sm text-blue-800 dark:text-blue-300 mb-2">
@@ -311,6 +342,22 @@ export default function IssueAssetModal({
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
               Fixed supply - cannot mint more later
             </p>
+          </div>
+
+          {/* F1r3fly Toggle */}
+          <div className="mb-4 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useFirefly}
+                onChange={(e) => setUseFirefly(e.target.checked)}
+                className="w-4 h-4 rounded focus:ring-2"
+                disabled={isLoading}
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                Use F1r3fly/Rholang execution
+              </span>
+            </label>
           </div>
 
           {/* Genesis UTXO Selection */}

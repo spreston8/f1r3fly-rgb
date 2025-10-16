@@ -1,0 +1,4 @@
+new stdout(`rho:io:stdout`) in {
+  stdout!("Hello from RGB Wallet!")
+}
+

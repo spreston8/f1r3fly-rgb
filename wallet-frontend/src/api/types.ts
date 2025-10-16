@@ -123,6 +123,26 @@ export interface IssueAssetResponse {
   genesis_seal: string;
 }
 
+export interface IssueAssetResponseWithFirefly {
+  contract_id: string;
+  genesis_seal: string;
+  firefly_deploy_id: string;
+  firefly_block_hash: string;
+  firefly_contract_data: {
+    status: string;
+    message: string;
+    deploy_id: string;
+    block_hash: string;
+    asset_name: string;
+    ticker: string;
+    supply: number;
+    precision: number;
+    genesis_utxo: string;
+    timestamp: number;
+    contract_type: string;
+  };
+}
+
 export interface GenerateInvoiceRequest {
   contract_id: string;
   amount: number;  // Required (Backend is optional)
@@ -179,5 +199,14 @@ export const PRECISION_OPTIONS = [
 // Error response type
 export interface ApiError {
   error: string;
+}
+
+// Firefly integration types
+export interface FireflyNodeStatus {
+  node_connected: boolean;
+  node_url: string;
+  peers: number | null;
+  version: string | null;
+  message: string;
 }
 

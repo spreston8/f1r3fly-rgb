@@ -215,6 +215,122 @@ impl RgbManager {
         noise.input_raw(b"wallet_noise");
         noise
     }
+    
+    /// Issue RGB20 asset with Firefly/Rholang execution
+    /// This creates the asset on both Firefly blockchain and via ALuVM
+    pub async fn issue_rgb20_asset_with_firefly(
+        &self,
+        request: IssueAssetRequest,
+        firefly_client: &crate::firefly::FireflyClient,
+    ) -> Result<IssueAssetResponseWithFirefly, crate::error::WalletError> {
+        println!("🔥 Starting Firefly/Rholang asset issuance...");
+        
+        // STEP 1: Generate Rholang contract from request
+        let rholang_code = self.generate_rgb20_rholang(&request)?;
+        println!("✅ Generated Rholang contract ({} bytes)", rholang_code.len());
+        
+        // STEP 2: Deploy to Firefly
+        println!("📤 Deploying Rholang contract to Firefly...");
+        let deploy_id = firefly_client
+            .deploy(&rholang_code)
+            .await
+            .map_err(|e| crate::error::WalletError::Network(
+                format!("Firefly deploy failed: {}", e)
+            ))?;
+        println!("✅ Deploy ID: {}", deploy_id);
+        
+        // STEP 3: Propose block to include deploy
+        println!("🎲 Proposing block...");
+        let block_hash = firefly_client
+            .propose()
+            .await
+            .map_err(|e| crate::error::WalletError::Network(
+                format!("Firefly propose failed: {}", e)
+            ))?;
+        println!("✅ Block Hash: {}", block_hash);
+        
+        // STEP 4: Wait for deploy to be included
+        println!("⏳ Waiting for deploy to be included in block...");
+        let _confirmed_block = firefly_client
+            .wait_for_deploy(&deploy_id, 10)
+            .await
+            .map_err(|e| crate::error::WalletError::Network(
+                format!("Failed to confirm deploy: {}", e)
+            ))?;
+        println!("✅ Deploy confirmed in block");
+        
+        // STEP 5: Issue RGB contract via ALuVM (legacy path)
+        println!("📜 Issuing RGB contract via ALuVM...");
+        let rgb_response = self.issue_rgb20_asset(request.clone())?;
+        println!("✅ RGB contract issued: {}", rgb_response.contract_id);
+        
+        // STEP 6: Return combined response
+        // For demo purposes, we prove dual-anchor by returning both Bitcoin and Firefly references
+        let firefly_contract_data = serde_json::json!({
+            "status": "deployed",
+            "message": "RGB20 asset contract deployed to Firefly blockchain",
+            "deploy_id": deploy_id,
+            "block_hash": block_hash,
+            "asset_name": request.name,
+            "ticker": request.ticker,
+            "supply": request.supply,
+            "precision": request.precision,
+            "genesis_utxo": request.genesis_utxo,
+            "timestamp": chrono::Utc::now().timestamp(),
+            "contract_type": "RGB20-FNA"
+        });
+        
+        Ok(IssueAssetResponseWithFirefly {
+            contract_id: rgb_response.contract_id,
+            genesis_seal: rgb_response.genesis_seal,
+            firefly_deploy_id: deploy_id,
+            firefly_block_hash: block_hash,
+            firefly_contract_data,
+        })
+    }
+    
+    /// Generate Rholang code for RGB20 asset issuance
+    fn generate_rgb20_rholang(&self, request: &IssueAssetRequest) -> Result<String, crate::error::WalletError> {
+        // Load template
+        let template = include_str!("../../rholang/rgb20_asset.rho");
+        
+        let timestamp = chrono::Utc::now().timestamp();
+        
+        // Instantiate contract with parameters
+        // The contract executes and logs to stdout, proving the deploy succeeded
+        let rholang_code = format!(
+            r#"
+{}
+
+// Instantiate RGB20 asset contract with parameters
+new return, stdout(`rho:io:stdout`) in {{
+  @"RGB20Asset"!(
+    "{}",      // name
+    "{}",      // ticker
+    {},        // precision
+    {},        // supply
+    "{}",      // genesis_utxo
+    {},        // timestamp
+    *return
+  ) |
+  
+  // Log the result for verification
+  for(@result <- return) {{
+    stdout!(["RGB20 Asset Issuance Complete:", result])
+  }}
+}}
+            "#,
+            template,
+            request.name,
+            request.ticker,
+            request.precision,
+            request.supply,
+            request.genesis_utxo,
+            timestamp
+        );
+        
+        Ok(rholang_code)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -230,6 +346,15 @@ pub struct IssueAssetRequest {
 pub struct IssueAssetResponse {
     pub contract_id: String,
     pub genesis_seal: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueAssetResponseWithFirefly {
+    pub contract_id: String,
+    pub genesis_seal: String,
+    pub firefly_deploy_id: String,
+    pub firefly_block_hash: String,
+    pub firefly_contract_data: serde_json::Value,
 }
 
 // Helper: Parse UTXO outpoint

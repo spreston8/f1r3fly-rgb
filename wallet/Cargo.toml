@@ -31,6 +31,14 @@ tower-http = { version = "0.5", features = ["cors"] }
 # HTTP client (Esplora)
 reqwest = { version = "0.11", features = ["json"] }
 
+# F1r3fly/Rholang integration
+secp256k1 = { version = "0.28.0", features = ["rand-std"] }
+blake2 = "0.10.6"
+typenum = "1.16.0"
+prost = "0.13.5"
+f1r3fly-models = "0.1.0"
+hex = "0.4.3"
+
 # Async utilities
 futures = "0.3"
 

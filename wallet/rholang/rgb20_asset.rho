@@ -1,0 +1,51 @@
+// RGB20 Asset Issuance Contract for F1r3fly/Rholang
+// This contract stores RGB asset metadata on the F1r3fly blockchain
+// while maintaining Bitcoin UTXO as the primary anchor (RGB philosophy)
+
+contract @"RGB20Asset"(
+  @assetName,      // String: Asset name (e.g., "Test Token")
+  @ticker,         // String: Asset ticker (e.g., "TEST")
+  @precision,      // Int: Decimal precision (0-10)
+  @supply,         // Int: Total supply
+  @genesisUtxo,    // String: Bitcoin UTXO anchor ("txid:vout")
+  @timestamp,      // Int: Unix timestamp
+  return
+) = {
+  new stdout(`rho:io:stdout`) in {
+    
+    // Create asset state map
+    new assetStateMap in {
+      assetStateMap!({
+        "name": assetName,
+        "ticker": ticker,
+        "precision": precision,
+        "totalSupply": supply,
+        "genesisUtxo": genesisUtxo,
+        "timestamp": timestamp,
+        "contractType": "RGB20-FNA"
+      }) |
+      
+      for(@assetState <- assetStateMap) {
+        // Put state back on channel
+        assetStateMap!(assetState) |
+        
+        // Log success to stdout
+        stdout!({
+          "event": "RGB20AssetCreated",
+          "name": assetName,
+          "ticker": ticker,
+          "supply": supply,
+          "seal": genesisUtxo,
+          "timestamp": timestamp
+        }) |
+        
+        // Return complete result
+        return!({
+          "success": true,
+          "assetState": assetState,
+          "message": "RGB20 asset created successfully on F1r3fly"
+        })
+      }
+    }
+  }
+}

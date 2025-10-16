@@ -8,12 +8,14 @@ use super::storage::{Metadata, Storage};
 use bitcoin::Network;
 use chrono::Utc;
 use std::str::FromStr;
+use crate::firefly::FireflyClient;
 
 pub struct WalletManager {
     pub storage: Storage,
     balance_checker: BalanceChecker,
     pub rgb_manager: RgbManager,
     rgb_runtime_manager: RgbRuntimeManager,
+    pub firefly_client: Option<FireflyClient>,
 }
 
 impl WalletManager {
@@ -28,11 +30,15 @@ impl WalletManager {
             bpstd::Network::Signet,
         );
         
+        // Initialize Firefly client (gRPC port 40401, HTTP port 40403)
+        let firefly_client = Some(FireflyClient::new("localhost", 40401));
+        
         Self {
             storage,
             balance_checker: BalanceChecker::new(),
             rgb_manager,
             rgb_runtime_manager,
+            firefly_client,
         }
     }
 

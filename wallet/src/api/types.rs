@@ -97,3 +97,13 @@ pub struct ExportGenesisResponse {
     pub file_size_bytes: u64,
     pub download_url: String,
 }
+
+// Firefly integration types
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FireflyNodeStatus {
+    pub node_connected: bool,
+    pub node_url: String,
+    pub peers: Option<u64>,
+    pub version: Option<String>,
+    pub message: String,
+}

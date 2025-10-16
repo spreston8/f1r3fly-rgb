@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useTheme } from '../utils/theme';
+import { FireflyStatus } from './FireflyStatus';
 
 interface LayoutProps {
   children: ReactNode;
@@ -21,6 +22,7 @@ export default function Layout({ children }: LayoutProps) {
               <span className="text-sm text-gray-500 dark:text-gray-400 font-normal">(Signet)</span>
             </Link>
             <div className="flex items-center space-x-3">
+              <FireflyStatus />
               <Link
                 to="/docs"
                 className="px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors"

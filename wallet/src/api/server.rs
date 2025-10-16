@@ -12,6 +12,9 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
     let wallet_manager = Arc::new(WalletManager::new());
 
     let app = Router::new()
+        // Firefly integration
+        .route("/api/firefly/status", get(handlers::get_firefly_status_handler))
+        // Wallet routes
         .route("/api/wallet/create", post(handlers::create_wallet_handler))
         .route("/api/wallet/import", post(handlers::import_wallet_handler))
         .route("/api/wallet/list", get(handlers::list_wallets_handler))
@@ -33,6 +36,7 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
         .route("/api/wallet/:name/unlock-utxo", post(handlers::unlock_utxo_handler))
         .route("/api/wallet/:name/send-bitcoin", post(handlers::send_bitcoin_handler))
         .route("/api/wallet/:name/issue-asset", post(handlers::issue_asset_handler))
+        .route("/api/wallet/:name/issue-asset-firefly", post(handlers::issue_asset_with_firefly_handler))
         .route("/api/wallet/:name/generate-invoice", post(handlers::generate_invoice_handler))
         .route("/api/wallet/:name/send-transfer", post(handlers::send_transfer_handler))
         .route("/api/wallet/:name/accept-consignment", post(handlers::accept_consignment_handler))

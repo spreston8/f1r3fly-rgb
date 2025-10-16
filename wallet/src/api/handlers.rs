@@ -161,6 +161,27 @@ pub async fn issue_asset_handler(
     Ok(Json(result))
 }
 
+pub async fn issue_asset_with_firefly_handler(
+    State(manager): State<Arc<WalletManager>>,
+    Path(name): Path<String>,
+    Json(req): Json<IssueAssetRequest>,
+) -> Result<Json<crate::wallet::rgb::IssueAssetResponseWithFirefly>, crate::error::WalletError> {
+    // Validate wallet exists
+    if !manager.storage.wallet_exists(&name) {
+        return Err(crate::error::WalletError::WalletNotFound(name));
+    }
+    
+    // Get Firefly client
+    let firefly_client = manager.firefly_client
+        .as_ref()
+        .ok_or_else(|| crate::error::WalletError::Internal("Firefly client not initialized".into()))?;
+    
+    // Issue asset via RGB manager with Firefly
+    let result = manager.rgb_manager.issue_rgb20_asset_with_firefly(req, firefly_client).await?;
+    
+    Ok(Json(result))
+}
+
 pub async fn generate_invoice_handler(
     State(manager): State<Arc<WalletManager>>,
     Path(name): Path<String>,
@@ -294,4 +315,66 @@ pub async fn download_genesis_handler(
     ).into_response();
 
     Ok(response)
+}
+
+// Firefly integration handler
+pub async fn get_firefly_status_handler() -> Result<Json<super::types::FireflyNodeStatus>, crate::error::WalletError> {
+    use super::types::FireflyNodeStatus;
+    
+    let firefly_url = "http://localhost:40403";
+    let status_endpoint = format!("{}/status", firefly_url);
+    
+    // Try to connect to Firefly node
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| crate::error::WalletError::Network(format!("Failed to create HTTP client: {}", e)))?;
+    
+    match client.get(&status_endpoint).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                // Parse the status response
+                match response.json::<serde_json::Value>().await {
+                    Ok(status_json) => {
+                        let peers = status_json.get("peers").and_then(|p| p.as_u64());
+                        let version = status_json.get("version").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        
+                        Ok(Json(FireflyNodeStatus {
+                            node_connected: true,
+                            node_url: firefly_url.to_string(),
+                            peers,
+                            version,
+                            message: "Firefly node is running and reachable".to_string(),
+                        }))
+                    }
+                    Err(e) => {
+                        Ok(Json(FireflyNodeStatus {
+                            node_connected: true,
+                            node_url: firefly_url.to_string(),
+                            peers: None,
+                            version: None,
+                            message: format!("Connected but failed to parse response: {}", e),
+                        }))
+                    }
+                }
+            } else {
+                Ok(Json(FireflyNodeStatus {
+                    node_connected: false,
+                    node_url: firefly_url.to_string(),
+                    peers: None,
+                    version: None,
+                    message: format!("Firefly node returned error: HTTP {}", response.status()),
+                }))
+            }
+        }
+        Err(e) => {
+            Ok(Json(FireflyNodeStatus {
+                node_connected: false,
+                node_url: firefly_url.to_string(),
+                peers: None,
+                version: None,
+                message: format!("Cannot connect to Firefly node: {}. Is it running?", e),
+            }))
+        }
+    }
 }
