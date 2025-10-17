@@ -29,7 +29,7 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors"] }
 
 # HTTP client (Esplora)
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", features = ["json", "blocking"] }
 
 # F1r3fly/Rholang integration
 secp256k1 = { version = "0.28.0", features = ["rand-std"] }
@@ -51,6 +51,8 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+env_logger = "0.11"
 
 [profile.release]
 opt-level = 3

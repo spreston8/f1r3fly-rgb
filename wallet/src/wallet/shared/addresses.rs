@@ -68,7 +68,9 @@ impl AddressManager {
         let start = descriptor
             .find("tpub")
             .or_else(|| descriptor.find("xpub"))
-            .ok_or_else(|| crate::error::WalletError::InvalidDescriptor("No xpub/tpub found".into()))?;
+            .ok_or_else(|| {
+                crate::error::WalletError::InvalidDescriptor("No xpub/tpub found".into())
+            })?;
 
         let end = descriptor[start..]
             .find('/')

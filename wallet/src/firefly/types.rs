@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub struct DeployRequest {
-    pub term: String,           // Rholang code
-    pub phlo_limit: i64,        // Execution limit
-    pub language: String,       // "rholang"
+    pub term: String,     // Rholang code
+    pub phlo_limit: i64,  // Execution limit
+    pub language: String, // "rholang"
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,4 +38,3 @@ pub struct DeployInfo {
     pub block_hash: Option<String>,
     pub status: String,
 }
-

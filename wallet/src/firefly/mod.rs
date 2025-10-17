@@ -6,4 +6,3 @@ pub mod types;
 
 pub use client::FireflyClient;
 pub use types::*;
-

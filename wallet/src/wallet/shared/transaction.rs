@@ -26,7 +26,8 @@ impl TransactionBuilder {
         fee_rate_sat_vb: u64,
         recipient_address: Address,
     ) -> Result<Transaction, crate::error::WalletError> {
-        let selected_utxos = self.select_utxos(available_utxos, target_amount_sats, fee_rate_sat_vb)?;
+        let selected_utxos =
+            self.select_utxos(available_utxos, target_amount_sats, fee_rate_sat_vb)?;
 
         let total_input: u64 = selected_utxos.iter().map(|u| u.amount_sats).sum();
 
@@ -34,13 +35,11 @@ impl TransactionBuilder {
         let fee = estimated_size * fee_rate_sat_vb;
 
         if total_input < target_amount_sats + fee {
-            return Err(crate::error::WalletError::InsufficientFunds(
-                format!(
-                    "Need {} sats (amount + fee), but only have {} sats",
-                    target_amount_sats + fee,
-                    total_input
-                )
-            ));
+            return Err(crate::error::WalletError::InsufficientFunds(format!(
+                "Need {} sats (amount + fee), but only have {} sats",
+                target_amount_sats + fee,
+                total_input
+            )));
         }
 
         let change_amount = total_input - target_amount_sats - fee;
@@ -55,8 +54,9 @@ impl TransactionBuilder {
         for utxo in selected_utxos {
             tx.input.push(TxIn {
                 previous_output: OutPoint {
-                    txid: utxo.txid.parse()
-                        .map_err(|e| crate::error::WalletError::Bitcoin(format!("Invalid txid: {}", e)))?,
+                    txid: utxo.txid.parse().map_err(|e| {
+                        crate::error::WalletError::Bitcoin(format!("Invalid txid: {}", e))
+                    })?,
                     vout: utxo.vout,
                 },
                 script_sig: ScriptBuf::new(),
@@ -93,9 +93,11 @@ impl TransactionBuilder {
         let fee = estimated_size * fee_rate_sat_vb;
 
         if total_input < amount_sats + fee {
-            return Err(crate::error::WalletError::InsufficientFunds(
-                format!("Need {} sats (amount + fee), but only have {} sats", amount_sats + fee, total_input)
-            ));
+            return Err(crate::error::WalletError::InsufficientFunds(format!(
+                "Need {} sats (amount + fee), but only have {} sats",
+                amount_sats + fee,
+                total_input
+            )));
         }
 
         let change_amount = total_input - amount_sats - fee;
@@ -111,8 +113,9 @@ impl TransactionBuilder {
         for utxo in utxos {
             tx.input.push(TxIn {
                 previous_output: OutPoint {
-                    txid: utxo.txid.parse()
-                        .map_err(|e| crate::error::WalletError::Bitcoin(format!("Invalid txid: {}", e)))?,
+                    txid: utxo.txid.parse().map_err(|e| {
+                        crate::error::WalletError::Bitcoin(format!("Invalid txid: {}", e))
+                    })?,
                     vout: utxo.vout,
                 },
                 script_sig: ScriptBuf::new(),
@@ -148,17 +151,19 @@ impl TransactionBuilder {
         let fee = estimated_size * fee_rate_sat_vb;
 
         if utxo.amount_sats <= fee {
-            return Err(crate::error::WalletError::InsufficientFunds(
-                format!("UTXO amount ({} sats) is not enough to cover fee ({} sats)", utxo.amount_sats, fee)
-            ));
+            return Err(crate::error::WalletError::InsufficientFunds(format!(
+                "UTXO amount ({} sats) is not enough to cover fee ({} sats)",
+                utxo.amount_sats, fee
+            )));
         }
 
         let output_amount = utxo.amount_sats - fee;
 
         if output_amount < 546 {
-            return Err(crate::error::WalletError::InsufficientFunds(
-                format!("Output amount ({} sats) would be below dust limit (546 sats)", output_amount)
-            ));
+            return Err(crate::error::WalletError::InsufficientFunds(format!(
+                "Output amount ({} sats) would be below dust limit (546 sats)",
+                output_amount
+            )));
         }
 
         let mut tx = Transaction {
@@ -170,8 +175,9 @@ impl TransactionBuilder {
 
         tx.input.push(TxIn {
             previous_output: OutPoint {
-                txid: utxo.txid.parse()
-                    .map_err(|e| crate::error::WalletError::Bitcoin(format!("Invalid txid: {}", e)))?,
+                txid: utxo.txid.parse().map_err(|e| {
+                    crate::error::WalletError::Bitcoin(format!("Invalid txid: {}", e))
+                })?,
                 vout: utxo.vout,
             },
             script_sig: ScriptBuf::new(),
@@ -195,12 +201,14 @@ impl TransactionBuilder {
     ) -> Result<Transaction, crate::error::WalletError> {
         let secp = Secp256k1::new();
         let public_key = PublicKey::from_private_key(&secp, private_key);
-        let script_pubkey = Address::p2wpkh(&public_key.try_into().unwrap(), self.network).script_pubkey();
+        let script_pubkey =
+            Address::p2wpkh(&public_key.try_into().unwrap(), self.network).script_pubkey();
 
         let mut signatures = Vec::new();
 
         for (input_index, input) in tx.input.iter().enumerate() {
-            let utxo = utxos.iter()
+            let utxo = utxos
+                .iter()
                 .find(|u| {
                     if let Ok(txid) = u.txid.parse::<bitcoin::Txid>() {
                         txid == input.previous_output.txid && u.vout == input.previous_output.vout
@@ -208,10 +216,12 @@ impl TransactionBuilder {
                         false
                     }
                 })
-                .ok_or_else(|| crate::error::WalletError::Bitcoin("UTXO not found for input".into()))?;
+                .ok_or_else(|| {
+                    crate::error::WalletError::Bitcoin("UTXO not found for input".into())
+                })?;
 
             let mut sighash_cache = SighashCache::new(&tx);
-            
+
             let sighash = sighash_cache
                 .p2wpkh_signature_hash(
                     input_index,
@@ -262,16 +272,17 @@ impl TransactionBuilder {
             }
         }
 
-        Err(crate::error::WalletError::InsufficientFunds(
-            format!("Cannot create UTXO of {} sats with available balance", target_amount)
-        ))
+        Err(crate::error::WalletError::InsufficientFunds(format!(
+            "Cannot create UTXO of {} sats with available balance",
+            target_amount
+        )))
     }
 
     fn estimate_tx_size(&self, num_inputs: usize, num_outputs: usize) -> u64 {
         let base_size = 10;
         let input_size = 68;
         let output_size = 34;
-        
+
         (base_size + (num_inputs * input_size) + (num_outputs * output_size)) as u64
     }
 }
@@ -281,7 +292,7 @@ pub async fn broadcast_transaction(
     network: Network,
 ) -> Result<String, crate::error::WalletError> {
     let tx_hex = bitcoin::consensus::encode::serialize_hex(tx);
-    
+
     let base_url = match network {
         Network::Signet => "https://mempool.space/signet/api",
         Network::Testnet => "https://mempool.space/testnet/api",
@@ -297,13 +308,20 @@ pub async fn broadcast_transaction(
         .map_err(|e| crate::error::WalletError::Network(e.to_string()))?;
 
     if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(crate::error::WalletError::Network(format!("Broadcast failed: {}", error_text)));
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(crate::error::WalletError::Network(format!(
+            "Broadcast failed: {}",
+            error_text
+        )));
     }
 
-    let txid = response.text().await
+    let txid = response
+        .text()
+        .await
         .map_err(|e| crate::error::WalletError::Network(e.to_string()))?;
 
     Ok(txid)
 }
-

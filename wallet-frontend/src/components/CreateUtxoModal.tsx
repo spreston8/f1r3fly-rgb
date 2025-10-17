@@ -78,7 +78,7 @@ export default function CreateUtxoModal({
           </div>
 
           <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-            Move BTC to pre-fund UTXO for RGB20 transaction fees.
+            Create a Bitcoin UTXO at your wallet address for RGB operations.
           </p>
 
           <div className="flex border-b border-gray-200 dark:border-gray-700 mb-4">

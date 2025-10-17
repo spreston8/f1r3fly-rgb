@@ -1,12 +1,14 @@
+use amplify::ByteArray;
 use bip39::Mnemonic;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::Network;
 use bpstd::psbt::{Rejected, Signer};
-use bpstd::{KeyOrigin, LegacyPk, TapLeafHash, TapSighash, XOnlyPk, InternalPk, TapNodeHash, TapMerklePath};
 use bpstd::secp256k1::Secp256k1;
-use bpstd::Sign as DeriveSign;
 use bpstd::Sighash;
-use amplify::ByteArray;
+use bpstd::Sign as DeriveSign;
+use bpstd::{
+    InternalPk, KeyOrigin, LegacyPk, TapLeafHash, TapMerklePath, TapNodeHash, TapSighash, XOnlyPk,
+};
 use std::str::FromStr;
 
 /// Wallet signer for P2WPKH (SegWit) addresses only.
@@ -37,9 +39,14 @@ impl WalletSigner {
 
         // Build derivation path from KeyOrigin
         // KeyOrigin contains: (fingerprint, derivation_path)
-        let path_str = format!("m/{}", origin.as_derivation());
+        // Note: bpstd uses 'h' notation (84h), but bitcoin crate uses "'" notation (84')
+        // Also, bpstd includes leading '/' which must be stripped before adding 'm/'
+        let derivation = origin.as_derivation().to_string();
+        let derivation = derivation.trim_start_matches('/');
+        let path_str = format!("m/{}", derivation);
+        let path_str = path_str.replace('h', "'");
+        
         let path = DerivationPath::from_str(&path_str).ok()?;
-
         let derived_key = master_key.derive_priv(&secp, &path).ok()?;
 
         // Convert bitcoin::secp256k1::SecretKey to bpstd::secp256k1::SecretKey
@@ -49,7 +56,10 @@ impl WalletSigner {
 }
 
 impl Signer for WalletSigner {
-    type Sign<'s> = Self where Self: 's;
+    type Sign<'s>
+        = Self
+    where
+        Self: 's;
 
     fn approve(&self, _psbt: &bpstd::Psbt) -> Result<Self::Sign<'_>, Rejected> {
         // No user interaction needed in backend wallet
@@ -94,7 +104,12 @@ impl DeriveSign for WalletSigner {
         None
     }
 
-    fn should_sign_script_path(&self, _input: usize, _path: &TapMerklePath, _leaf_hash: TapLeafHash) -> bool {
+    fn should_sign_script_path(
+        &self,
+        _input: usize,
+        _path: &TapMerklePath,
+        _leaf_hash: TapLeafHash,
+    ) -> bool {
         // Not needed for P2WPKH (our descriptor type)
         false
     }
@@ -104,4 +119,3 @@ impl DeriveSign for WalletSigner {
         false
     }
 }
-

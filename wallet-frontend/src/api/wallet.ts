@@ -23,6 +23,7 @@ import type {
   SendTransferResponse,
   AcceptConsignmentResponse,
   ExportGenesisResponse,
+  DeleteWalletResponse,
   FireflyNodeStatus,
 } from './types';
 
@@ -50,6 +51,14 @@ export const walletApi = {
    */
   listWallets: async (): Promise<WalletMetadata[]> => {
     const response = await apiClient.get<WalletMetadata[]>('/wallet/list');
+    return response.data;
+  },
+
+  /**
+   * Delete a wallet permanently (cannot be undone)
+   */
+  deleteWallet: async (name: string): Promise<DeleteWalletResponse> => {
+    const response = await apiClient.delete<DeleteWalletResponse>(`/wallet/${name}`);
     return response.data;
   },
 

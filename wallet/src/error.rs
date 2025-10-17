@@ -79,4 +79,3 @@ impl IntoResponse for WalletError {
         (status, body).into_response()
     }
 }
-

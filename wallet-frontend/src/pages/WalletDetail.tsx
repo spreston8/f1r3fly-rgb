@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { walletApi } from '../api';
-import type { BalanceInfo, AddressInfo, NextAddressInfo } from '../api/types';
+import type { BalanceInfo, AddressInfo } from '../api/types';
 import BalanceDisplay from '../components/BalanceDisplay';
 import AddressList from '../components/AddressList';
 import UTXOList from '../components/UTXOList';
@@ -12,20 +12,23 @@ import SendTransferModal from '../components/SendTransferModal';
 import AcceptConsignmentModal from '../components/AcceptConsignmentModal';
 import ExportGenesisModal from '../components/ExportGenesisModal';
 import SendBitcoinModal from '../components/SendBitcoinModal';
+import DeleteWalletModal from '../components/DeleteWalletModal';
 import { copyToClipboard } from '../utils/format';
 
 export default function WalletDetail() {
   const { name } = useParams<{ name: string }>();
+  const navigate = useNavigate();
   const [balance, setBalance] = useState<BalanceInfo | null>(null);
-  const [nextAddress, setNextAddress] = useState<NextAddressInfo | null>(null);
   const [addresses, setAddresses] = useState<AddressInfo[]>([]);
   const [showAllAddresses, setShowAllAddresses] = useState(false);
   const [addressCount, setAddressCount] = useState(20);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncingRgb, setSyncingRgb] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addressCopied, setAddressCopied] = useState(false);
   const [descriptorCopied, setDescriptorCopied] = useState(false);
+  const [descriptor, setDescriptor] = useState<string>('');
   const [showCreateUtxoModal, setShowCreateUtxoModal] = useState(false);
   const [showIssueAssetModal, setShowIssueAssetModal] = useState(false);
   const [showGenerateInvoiceModal, setShowGenerateInvoiceModal] = useState(false);
@@ -33,6 +36,7 @@ export default function WalletDetail() {
   const [showAcceptConsignmentModal, setShowAcceptConsignmentModal] = useState(false);
   const [showExportGenesisModal, setShowExportGenesisModal] = useState(false);
   const [showSendBitcoinModal, setShowSendBitcoinModal] = useState(false);
+  const [showDeleteWalletModal, setShowDeleteWalletModal] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<{ contractId: string; ticker: string } | null>(null);
   const [selectedAssetForExport, setSelectedAssetForExport] = useState<{ contractId: string; ticker: string } | null>(null);
 
@@ -49,7 +53,7 @@ export default function WalletDetail() {
       ]);
       
       setBalance(balanceData);
-      setNextAddress(nextAddressData);
+      setDescriptor(nextAddressData.descriptor);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load wallet data');
     } finally {
@@ -89,8 +93,8 @@ export default function WalletDetail() {
   };
 
   const handleCopyAddress = async () => {
-    if (nextAddress) {
-      const success = await copyToClipboard(nextAddress.address);
+    if (balance?.display_address) {
+      const success = await copyToClipboard(balance.display_address);
       if (success) {
         setAddressCopied(true);
         setTimeout(() => setAddressCopied(false), 2000);
@@ -99,8 +103,8 @@ export default function WalletDetail() {
   };
 
   const handleCopyDescriptor = async () => {
-    if (nextAddress) {
-      const success = await copyToClipboard(nextAddress.descriptor);
+    if (descriptor) {
+      const success = await copyToClipboard(descriptor);
       if (success) {
         setDescriptorCopied(true);
         setTimeout(() => setDescriptorCopied(false), 2000);
@@ -204,9 +208,20 @@ export default function WalletDetail() {
       {/* RGB Assets Section */}
       {balance && balance.known_contracts && balance.known_contracts.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-900 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            🪙 RGB Assets
-          </h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+              🪙 RGB Assets
+            </h3>
+            {syncingRgb && (
+              <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
+                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Syncing RGB state...</span>
+              </div>
+            )}
+          </div>
           <div className="space-y-3">
             {balance.known_contracts.map((contract) => (
               <div
@@ -286,15 +301,15 @@ export default function WalletDetail() {
         />
       )}
 
-      {nextAddress && (
+      {balance?.display_address && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-900 p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                Primary Receive Address
+                Your Wallet Address
               </h3>
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Use this address for all deposits • {nextAddress.total_used > 0 ? `${nextAddress.total_used} address${nextAddress.total_used !== 1 ? 'es' : ''} have received funds` : 'No deposits yet'}
+                Use this address to receive Bitcoin and RGB tokens
               </p>
             </div>
           </div>
@@ -302,11 +317,11 @@ export default function WalletDetail() {
           <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 mb-4">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
-                Address #{nextAddress.index}
+                Public Address
               </span>
               <div className="flex items-center gap-2">
                 <a
-                  href={`https://mempool.space/signet/address/${nextAddress.address}`}
+                  href={`https://mempool.space/signet/address/${balance.display_address}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="px-3 py-1 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-gray-900 dark:hover:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md transition-colors inline-flex items-center"
@@ -323,27 +338,27 @@ export default function WalletDetail() {
               </div>
             </div>
             <a
-              href={`https://mempool.space/signet/address/${nextAddress.address}`}
+              href={`https://mempool.space/signet/address/${balance.display_address}`}
               target="_blank"
               rel="noopener noreferrer"
               className="block text-sm font-mono bg-white dark:bg-gray-800 p-3 rounded break-all text-primary dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 transition-colors"
               title="Click to view on Mempool Explorer"
             >
-              {nextAddress.address}
+              {balance.display_address}
             </a>
           </div>
 
           <button
             onClick={handleToggleAllAddresses}
-            className="text-sm text-primary dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 flex items-center"
+            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 flex items-center"
           >
-            {showAllAddresses ? '▼' : '▶'} Show all addresses
+            {showAllAddresses ? '▼' : '▶'} Advanced: Show all addresses
           </button>
 
           {showAllAddresses && (
             <div className="mt-4 pt-4 border-t dark:border-gray-700">
               <div className="flex items-center justify-between mb-4">
-                <h4 className="text-sm font-semibold text-gray-900 dark:text-white">All Addresses</h4>
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-white">All Addresses (Advanced)</h4>
                 <select
                   value={addressCount}
                   onChange={(e) => { setAddressCount(Number(e.target.value)); loadAllAddresses(); }}
@@ -354,6 +369,9 @@ export default function WalletDetail() {
                   <option value={50}>Show 50</option>
                 </select>
               </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                ℹ️ Your wallet manages multiple addresses internally for change outputs. Your balance shown above is aggregated from all addresses.
+              </p>
               {addresses.length > 0 ? (
                 <AddressList addresses={addresses} />
               ) : (
@@ -377,7 +395,7 @@ export default function WalletDetail() {
           </button>
         </div>
         <p className="text-xs font-mono bg-gray-50 dark:bg-gray-700 p-3 rounded break-all text-gray-600 dark:text-gray-300">
-          {nextAddress ? nextAddress.descriptor : 'Loading...'}
+          {descriptor || 'Loading...'}
         </p>
       </div>
 
@@ -419,6 +437,11 @@ export default function WalletDetail() {
         walletName={name || ''}
         isOpen={showSendTransferModal}
         onClose={() => setShowSendTransferModal(false)}
+        onSyncStart={() => setSyncingRgb(true)}
+        onSyncEnd={() => {
+          setSyncingRgb(false);
+          loadWalletData();
+        }}
       />
 
       <AcceptConsignmentModal
@@ -453,6 +476,31 @@ export default function WalletDetail() {
           loadWalletData();
         }}
       />
+
+      <DeleteWalletModal
+        walletName={name || ''}
+        isOpen={showDeleteWalletModal}
+        onClose={() => setShowDeleteWalletModal(false)}
+        onSuccess={() => {
+          navigate('/');
+        }}
+      />
+
+      {/* Danger Zone */}
+      <div className="mt-8 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-800 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-red-900 dark:text-red-300 mb-2">
+          ⚠️ Danger Zone
+        </h3>
+        <p className="text-sm text-red-700 dark:text-red-400 mb-4">
+          Permanently delete this wallet and all its data. This action cannot be undone.
+        </p>
+        <button
+          onClick={() => setShowDeleteWalletModal(true)}
+          className="px-4 py-2 bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600 text-white rounded-md transition-colors font-medium"
+        >
+          🗑️ Delete Wallet
+        </button>
+      </div>
     </div>
   );
 }

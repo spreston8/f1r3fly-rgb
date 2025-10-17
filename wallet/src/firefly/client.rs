@@ -12,7 +12,8 @@ use typenum::U32;
 
 /// Bootstrap private key from standalone.yml
 /// validator-private-key: 5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657
-const BOOTSTRAP_PRIVATE_KEY: &str = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657";
+const BOOTSTRAP_PRIVATE_KEY: &str =
+    "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657";
 
 pub struct FireflyClient {
     signing_key: SecretKey,
@@ -23,30 +24,27 @@ pub struct FireflyClient {
 impl FireflyClient {
     pub fn new(host: &str, grpc_port: u16) -> Self {
         let signing_key = SecretKey::from_slice(
-            &hex::decode(BOOTSTRAP_PRIVATE_KEY)
-                .expect("Failed to decode bootstrap private key")
+            &hex::decode(BOOTSTRAP_PRIVATE_KEY).expect("Failed to decode bootstrap private key"),
         )
         .expect("Invalid bootstrap private key");
-        
+
         Self {
             signing_key,
             node_host: host.to_string(),
             grpc_port,
         }
     }
-    
+
     /// Deploy Rholang code (writes to blockchain)
-    pub async fn deploy(&self, rholang_code: &str) 
-        -> Result<String, Box<dyn std::error::Error>> 
-    {
+    pub async fn deploy(&self, rholang_code: &str) -> Result<String, Box<dyn std::error::Error>> {
         // Get current block number for validity window
         let current_block = match self.get_current_block_number().await {
             Ok(block_num) => {
-                println!("🔢 Current block: {}", block_num);
+                log::debug!("Current Firefly block: {}", block_num);
                 block_num
             }
             Err(e) => {
-                println!("⚠️  Warning: Could not get current block number ({}), using VABN=0", e);
+                log::warn!("Could not get current block number ({}), using VABN=0", e);
                 0
             }
         };
@@ -60,10 +58,9 @@ impl FireflyClient {
         );
 
         // Connect to the F1r3fly node via gRPC
-        let mut deploy_service_client = DeployServiceClient::connect(
-            format!("http://{}:{}/", self.node_host, self.grpc_port)
-        )
-        .await?;
+        let mut deploy_service_client =
+            DeployServiceClient::connect(format!("http://{}:{}/", self.node_host, self.grpc_port))
+                .await?;
 
         // Send the deploy
         let deploy_response = deploy_service_client.do_deploy(deployment).await?;
@@ -83,7 +80,9 @@ impl FireflyClient {
 
                 if let Some(deploy_id) = cleaned_result.strip_prefix("Success! DeployId is: ") {
                     Ok(deploy_id.trim().to_string())
-                } else if let Some(deploy_id) = cleaned_result.strip_prefix("Success!\nDeployId is: ") {
+                } else if let Some(deploy_id) =
+                    cleaned_result.strip_prefix("Success!\nDeployId is: ")
+                {
                     Ok(deploy_id.trim().to_string())
                 } else if cleaned_result.starts_with("Success!") {
                     // Look for any long hex string in the response
@@ -101,16 +100,13 @@ impl FireflyClient {
             }
         }
     }
-    
+
     /// Propose block
-    pub async fn propose(&self) 
-        -> Result<String, Box<dyn std::error::Error>> 
-    {
+    pub async fn propose(&self) -> Result<String, Box<dyn std::error::Error>> {
         // Connect to the F1r3fly node's propose service
-        let mut propose_client = ProposeServiceClient::connect(
-            format!("http://{}:{}/", self.node_host, self.grpc_port)
-        )
-        .await?;
+        let mut propose_client =
+            ProposeServiceClient::connect(format!("http://{}:{}/", self.node_host, self.grpc_port))
+                .await?;
 
         // Send the propose request
         let propose_response = propose_client
@@ -140,19 +136,25 @@ impl FireflyClient {
     }
 
     /// Wait for deploy to be included in a block
-    pub async fn wait_for_deploy(&self, deploy_id: &str, max_attempts: u32) 
-        -> Result<String, Box<dyn std::error::Error>> 
-    {
+    pub async fn wait_for_deploy(
+        &self,
+        deploy_id: &str,
+        max_attempts: u32,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         for attempt in 1..=max_attempts {
             let response = reqwest::Client::new()
-                .get(&format!("http://{}:40403/api/deploy/{}", self.node_host, deploy_id))
+                .get(&format!(
+                    "http://{}:40403/api/deploy/{}",
+                    self.node_host, deploy_id
+                ))
                 .send()
                 .await;
-            
+
             match response {
                 Ok(resp) if resp.status().is_success() => {
                     let deploy_info: serde_json::Value = resp.json().await?;
-                    if let Some(block_hash) = deploy_info.get("blockHash").and_then(|v| v.as_str()) {
+                    if let Some(block_hash) = deploy_info.get("blockHash").and_then(|v| v.as_str())
+                    {
                         return Ok(block_hash.to_string());
                     }
                 }
@@ -160,12 +162,12 @@ impl FireflyClient {
                     // Deploy not yet included, continue waiting
                 }
             }
-            
+
             if attempt < max_attempts {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         }
-        
+
         Err("Deploy not included in block after max attempts".into())
     }
 
@@ -183,14 +185,16 @@ impl FireflyClient {
     }
 
     /// Gets blocks in the main chain
-    async fn show_main_chain(&self, depth: u32) -> Result<Vec<LightBlockInfo>, Box<dyn std::error::Error>> {
+    async fn show_main_chain(
+        &self,
+        depth: u32,
+    ) -> Result<Vec<LightBlockInfo>, Box<dyn std::error::Error>> {
         use f1r3fly_models::casper::v1::block_info_response::Message;
 
         // Connect to the F1r3fly node
-        let mut deploy_service_client = DeployServiceClient::connect(
-            format!("http://{}:{}/", self.node_host, self.grpc_port)
-        )
-        .await?;
+        let mut deploy_service_client =
+            DeployServiceClient::connect(format!("http://{}:{}/", self.node_host, self.grpc_port))
+                .await?;
 
         // Create the query
         let query = BlocksQuery {
@@ -208,7 +212,9 @@ impl FireflyClient {
             if let Some(message) = response.message {
                 match message {
                     Message::Error(service_error) => {
-                        return Err(format!("gRPC Error: {}", service_error.messages.join("; ")).into());
+                        return Err(
+                            format!("gRPC Error: {}", service_error.messages.join("; ")).into()
+                        );
                     }
                     Message::BlockInfo(block_info) => {
                         blocks.push(block_info);

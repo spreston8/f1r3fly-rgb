@@ -18,6 +18,7 @@ export interface WalletInfo {
   name: string;
   mnemonic: string;
   first_address: string;
+  public_address: string;
   descriptor: string;
 }
 
@@ -70,6 +71,7 @@ export interface BalanceInfo {
   utxo_count: number;
   utxos: UTXO[];
   known_contracts: KnownContract[];
+  display_address: string;
 }
 
 export interface SyncResult {
@@ -179,6 +181,11 @@ export interface ExportGenesisResponse {
   consignment_filename: string;
   file_size_bytes: number;
   download_url: string;
+}
+
+export interface DeleteWalletResponse {
+  wallet_name: string;
+  status: string;
 }
 
 // Precision options for RGB20 assets

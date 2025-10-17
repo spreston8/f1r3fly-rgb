@@ -6,12 +6,16 @@ interface SendTransferModalProps {
   walletName: string;
   isOpen: boolean;
   onClose: () => void;
+  onSyncStart?: () => void;
+  onSyncEnd?: () => void;
 }
 
 export default function SendTransferModal({
   walletName,
   isOpen,
   onClose,
+  onSyncStart,
+  onSyncEnd,
 }: SendTransferModalProps) {
   const [invoice, setInvoice] = useState('');
   const [feeRate, setFeeRate] = useState('1');
@@ -33,11 +37,17 @@ export default function SendTransferModal({
       const response = await walletApi.sendTransfer(walletName, request);
       setResult(response);
       
-      // Auto-sync RGB runtime in background to update balance
-      // Don't await or block UI on this
-      walletApi.syncRgb(walletName).catch(err => {
+      // Note: Backend now syncs before transfer to ensure fresh state
+      // We still sync after to update UI with final balance
+      try {
+        onSyncStart?.();
+        await walletApi.syncRgb(walletName);
+      } catch (err) {
         console.warn('RGB sync after transfer failed:', err);
-      });
+        // Non-fatal - transfer already succeeded
+      } finally {
+        onSyncEnd?.();
+      }
     } catch (err: unknown) {
       const message = err && typeof err === 'object' && 'response' in err
         ? (err as { response?: { data?: { error?: string } }; message?: string }).response?.data?.error 

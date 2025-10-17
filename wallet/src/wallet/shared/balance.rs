@@ -20,7 +20,7 @@ impl BalanceChecker {
         address_index: u32,
     ) -> Result<Vec<UTXO>, crate::error::WalletError> {
         let url = format!("{}/address/{}/utxo", self.base_url, address);
-        
+
         let response = self
             .client
             .get(&url)
@@ -85,7 +85,9 @@ impl BalanceChecker {
             .await
             .map_err(|e| crate::error::WalletError::Esplora(e.to_string()))?
             .parse()
-            .map_err(|e: std::num::ParseIntError| crate::error::WalletError::Esplora(e.to_string()))?;
+            .map_err(|e: std::num::ParseIntError| {
+                crate::error::WalletError::Esplora(e.to_string())
+            })?;
 
         Ok(height)
     }
@@ -107,7 +109,8 @@ impl BalanceChecker {
                         Ok(response) => {
                             if response.status().is_success() {
                                 if let Ok(addr_info) = response.json::<serde_json::Value>().await {
-                                    let confirmed_funded = addr_info["chain_stats"]["funded_txo_sum"]
+                                    let confirmed_funded = addr_info["chain_stats"]
+                                        ["funded_txo_sum"]
                                         .as_u64()
                                         .unwrap_or(0);
                                     let confirmed_spent = addr_info["chain_stats"]["spent_txo_sum"]
@@ -156,6 +159,7 @@ impl BalanceChecker {
             utxo_count: all_utxos.len(),
             utxos: all_utxos,
             known_contracts: Vec::new(),
+            display_address: String::new(), // Set by caller in balance_ops
         })
     }
 }
@@ -189,5 +193,5 @@ pub struct BalanceInfo {
     pub utxo_count: usize,
     pub utxos: Vec<UTXO>,
     pub known_contracts: Vec<KnownContract>,
+    pub display_address: String,
 }
-
