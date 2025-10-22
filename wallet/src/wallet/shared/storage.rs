@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub struct Storage {
     base_path: PathBuf,
 }
@@ -13,6 +14,11 @@ impl Storage {
         Self {
             base_path: PathBuf::from("./wallets"),
         }
+    }
+
+    /// Create storage with custom base directory (for testing)
+    pub fn new_with_base_dir(base_path: PathBuf) -> Self {
+        Self { base_path }
     }
 
     pub fn base_dir(&self) -> &PathBuf {

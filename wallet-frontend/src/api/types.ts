@@ -148,6 +148,20 @@ export interface IssueAssetResponseWithFirefly {
 export interface GenerateInvoiceRequest {
   contract_id: string;
   amount: number;  // Required (Backend is optional)
+  utxo_selection?: UtxoSelection;
+  nonce?: number;
+}
+
+export type UtxoSelection =
+  | { type: 'auto' }
+  | { type: 'specific'; txid: string; vout: number };
+
+export interface UtxoInfo {
+  txid: string;
+  vout: number;
+  amount_sats: number;
+  address: string;
+  confirmations: number;
 }
 
 export interface GenerateInvoiceResponse {
@@ -155,6 +169,7 @@ export interface GenerateInvoiceResponse {
   contract_id: string;
   amount?: number;
   seal_utxo: string;
+  selected_utxo?: UtxoInfo;
 }
 
 export interface SendTransferRequest {

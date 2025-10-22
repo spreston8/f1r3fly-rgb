@@ -23,7 +23,7 @@ use ::rgb::{ContractId, WitnessStatus};
 /// After import, users should sync their wallet to see updated token balances.
 pub fn accept_consignment(
     storage: &Storage,
-    rgb_runtime_manager: &RgbRuntimeManager,
+    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
     wallet_name: &str,
     consignment_bytes: Vec<u8>,
     sync_fn: impl Fn(&str) -> Result<(), WalletError>,
@@ -51,17 +51,17 @@ pub fn accept_consignment(
     drop(file);
     log::debug!("Temp consignment file created: {:?}", temp_path);
 
-    // 2. Initialize runtime (no sync needed for import)
-    log::debug!("Initializing RGB runtime for consignment import");
-    let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
-    log::debug!("Runtime initialized");
+    // 2. Get cached runtime for consignment import (Phase 2)
+    log::debug!("Acquiring cached RGB runtime for consignment import");
+    let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
 
-    // 3. Get contract IDs before importing
-    let contract_ids_before: std::collections::HashSet<String> = runtime
-        .contracts
-        .contract_ids()
-        .map(|id| id.to_string())
-        .collect();
+    let (contract_id_str, import_type, bitcoin_txid, status) = guard.execute(|runtime| {
+        // 3. Get contract IDs before importing
+        let contract_ids_before: std::collections::HashSet<String> = runtime
+            .contracts
+            .contract_ids()
+            .map(|id| id.to_string())
+            .collect();
     log::debug!(
         "Found {} existing contract(s) before import",
         contract_ids_before.len()
@@ -147,7 +147,10 @@ pub fn accept_consignment(
             // Fallback if witnesses iterator is empty despite count > 0
             ("transfer".to_string(), None, "imported".to_string())
         }
-    };
+        };
+
+        Ok((contract_id_str, import_type, bitcoin_txid, status))
+    })?;
 
     // 7. Cleanup temp file
     let _ = std::fs::remove_file(&temp_path);
@@ -165,13 +168,22 @@ pub fn accept_consignment(
     })
 }
 
-/// Export a genesis consignment for syncing contract state across devices.
+/// Export a genesis consignment to share contract knowledge.
 ///
-/// This allows users to share contract knowledge (not ownership transfer)
-/// with the same wallet on different devices. No Bitcoin transaction is required.
+/// **Two use cases:**
+/// 1. **Same wallet, different device**: Sync your contract to another device (same mnemonic).
+///    The other device will see the same tokens and UTXOs.
+/// 2. **Share with another wallet**: Let someone else know this contract exists (different mnemonic).
+///    They learn about the contract but don't own any tokens yet.
+///    They can then generate invoices to receive tokens from you.
+///
+/// **Important:** Genesis consignments share contract definition, not token ownership.
+/// No Bitcoin transaction is required.
+///
+/// To actually transfer token ownership, use `send_transfer()` instead.
 pub fn export_genesis_consignment(
     storage: &Storage,
-    rgb_runtime_manager: &RgbRuntimeManager,
+    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
     wallet_name: &str,
     contract_id_str: &str,
 ) -> Result<ExportGenesisResponse, WalletError> {
@@ -187,36 +199,7 @@ pub fn export_genesis_consignment(
 
     log::debug!("Parsed contract ID: {}", contract_id);
 
-    // 2. Initialize runtime WITHOUT blockchain sync (we're just reading state)
-    let runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
-    log::debug!("Runtime initialized for genesis export");
-
-    // 3. Verify we have this contract
-    if !runtime.contracts.has_contract(contract_id) {
-        log::error!("Contract {} not found in wallet", contract_id);
-        return Err(WalletError::Rgb(format!(
-            "Contract {} not found in wallet",
-            contract_id
-        )));
-    }
-    log::debug!("Contract exists in runtime");
-
-    // 4. Get contract state to verify we have allocations
-    let state = runtime.contracts.contract_state(contract_id);
-    log::debug!("Retrieved contract state");
-
-    // Check if we have any owned states (just for validation)
-    let has_allocations = state.owned.values().any(|states| !states.is_empty());
-
-    if !has_allocations {
-        log::error!("No allocations found for contract");
-        return Err(WalletError::Rgb(
-            "No allocations found for contract".to_string(),
-        ));
-    }
-    log::debug!("Contract has allocations");
-
-    // 5. Create consignment directory
+    // 2. Create consignment directory first (Phase 2)
     let consignment_filename = format!("genesis_{}.rgbc", contract_id);
     let exports_dir = storage.base_dir().join("exports");
 
@@ -234,22 +217,55 @@ pub fn export_genesis_consignment(
         log::debug!("Removed existing export file");
     }
 
-    // 6. Export complete contract state (no terminals needed)
-    // Uses export() instead of consign() - exports all state without requiring destinations
-    log::info!(
-        "Exporting genesis consignment for contract: {}",
-        contract_id
-    );
-    runtime
-        .contracts
-        .export_to_file(&consignment_path, contract_id)
-        .map_err(|e| {
-            log::error!("Genesis export failed: {:?}", e);
-            WalletError::Rgb(format!("Failed to export genesis consignment: {:?}", e))
-        })?;
-    log::info!("Genesis consignment exported successfully");
+    // 3. Get cached runtime and export (Phase 2)
+    log::debug!("Acquiring cached RGB runtime for genesis export");
+    let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
 
-    // 7. Get file size
+    guard.execute(|runtime| {
+        // Verify we have this contract
+        if !runtime.contracts.has_contract(contract_id) {
+            log::error!("Contract {} not found in wallet", contract_id);
+            return Err(WalletError::Rgb(format!(
+                "Contract {} not found in wallet",
+                contract_id
+            )));
+        }
+        log::debug!("Contract exists in runtime");
+
+        // Get contract state to verify we have allocations
+        let state = runtime.contracts.contract_state(contract_id);
+        log::debug!("Retrieved contract state");
+
+        // Check if we have any owned states (just for validation)
+        let has_allocations = state.owned.values().any(|states| !states.is_empty());
+
+        if !has_allocations {
+            log::error!("No allocations found for contract");
+            return Err(WalletError::Rgb(
+                "No allocations found for contract".to_string(),
+            ));
+        }
+        log::debug!("Contract has allocations");
+
+        // Export complete contract state (no terminals needed)
+        // Uses export() instead of consign() - exports all state without requiring destinations
+        log::info!(
+            "Exporting genesis consignment for contract: {}",
+            contract_id
+        );
+        runtime
+            .contracts
+            .export_to_file(&consignment_path, contract_id)
+            .map_err(|e| {
+                log::error!("Genesis export failed: {:?}", e);
+                WalletError::Rgb(format!("Failed to export genesis consignment: {:?}", e))
+            })?;
+        log::info!("Genesis consignment exported successfully");
+
+        Ok(())
+    })?;
+
+    // 4. Get file size
     let file_size = std::fs::metadata(&consignment_path)
         .map_err(|e| WalletError::Internal(format!("Failed to read file metadata: {}", e)))?
         .len();

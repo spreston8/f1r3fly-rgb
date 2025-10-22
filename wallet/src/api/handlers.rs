@@ -109,7 +109,7 @@ pub async fn sync_rgb_handler(
     State(manager): State<Arc<WalletManager>>,
     Path(name): Path<String>,
 ) -> Result<Json<()>, crate::error::WalletError> {
-    manager.sync_rgb_runtime(&name)?;
+    manager.sync_rgb_runtime(&name).await?;
     Ok(Json(()))
 }
 
@@ -179,28 +179,8 @@ pub async fn issue_asset_handler(
     Path(name): Path<String>,
     Json(req): Json<IssueAssetRequest>,
 ) -> Result<Json<IssueAssetResponse>, crate::error::WalletError> {
-    // Validate wallet exists
-    if !manager.storage.wallet_exists(&name) {
-        return Err(crate::error::WalletError::WalletNotFound(name));
-    }
-
     log::info!("Starting RGB asset issuance: {} ({})", req.name, req.ticker);
-    log::debug!("Asset details - Supply: {}, Precision: {}, Genesis UTXO: {}", 
-        req.supply, req.precision, req.genesis_utxo);
-
-    // Get per-wallet RGB manager
-    let rgb_manager = manager.get_rgb_manager(&name)?;
-
-    // Issue asset via RGB manager (fast, < 1 second)
-    log::debug!("Issuing asset to local stockpile...");
-    let result = rgb_manager.issue_rgb20_asset(req)?;
-    log::info!("Asset created successfully: {}", result.contract_id);
-
-    // Sync RGB runtime so wallet sees the new tokens immediately (slow, 10-15 seconds)
-    log::info!("Synchronizing RGB runtime to register new asset in wallet...");
-    manager.sync_rgb_after_state_change(&name)?;
-    log::info!("Asset issuance complete and synchronized");
-
+    let result = manager.issue_asset(&name, req).await?;
     Ok(Json(result))
 }
 
@@ -238,7 +218,7 @@ pub async fn issue_asset_with_firefly_handler(
 
     // Sync RGB runtime so wallet sees the new tokens immediately (slow, 10-15 seconds)
     log::info!("Synchronizing RGB runtime to register new asset in wallet...");
-    manager.sync_rgb_after_state_change(&name)?;
+    manager.sync_rgb_after_state_change(&name).await?;
 
     Ok(Json(result))
 }
@@ -248,22 +228,15 @@ pub async fn generate_invoice_handler(
     Path(name): Path<String>,
     Json(req): Json<GenerateInvoiceRequest>,
 ) -> Result<Json<GenerateInvoiceResponse>, crate::error::WalletError> {
-    // Generate invoice
-    let result = manager
-        .generate_rgb_invoice(
-            &name,
-            api::types::GenerateInvoiceRequest {
-                contract_id: req.contract_id.clone(),
-                amount: req.amount,
-            },
-        )
-        .await?;
+    // Generate invoice (pass the full request with utxo_selection and nonce)
+    let result = manager.generate_rgb_invoice(&name, req).await?;
 
     Ok(Json(GenerateInvoiceResponse {
         invoice: result.invoice,
         contract_id: result.contract_id,
         amount: result.amount,
         seal_utxo: result.seal_utxo,
+        selected_utxo: result.selected_utxo,
     }))
 }
 
@@ -273,21 +246,11 @@ pub async fn send_transfer_handler(
     Json(request): Json<SendTransferRequest>,
 ) -> Result<Json<SendTransferResponse>, crate::error::WalletError> {
     log::info!("Send transfer initiated for wallet: {}", wallet_name);
-
-    let result = manager
-        .send_transfer(&wallet_name, &request.invoice, request.fee_rate_sat_vb)
-        .map_err(|e| {
-            log::error!("Send transfer failed for wallet {}: {:?}", wallet_name, e);
-            e
-        })?;
-
+    
+    let result = manager.send_transfer(&wallet_name, &request.invoice, request.fee_rate_sat_vb).await?;
+    
     log::info!("Send transfer succeeded for wallet: {}", wallet_name);
-    Ok(Json(SendTransferResponse {
-        bitcoin_txid: result.bitcoin_txid,
-        consignment_download_url: result.consignment_download_url,
-        consignment_filename: result.consignment_filename,
-        status: result.status,
-    }))
+    Ok(Json(result))
 }
 
 pub async fn download_consignment_handler(
@@ -334,11 +297,7 @@ pub async fn accept_consignment_handler(
     Path(wallet_name): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Json<AcceptConsignmentResponse>, crate::error::WalletError> {
-    if !manager.storage.wallet_exists(&wallet_name) {
-        return Err(crate::error::WalletError::WalletNotFound(wallet_name));
-    }
-
-    let result = manager.accept_consignment(&wallet_name, body.to_vec())?;
+    let result = manager.accept_consignment(&wallet_name, body.to_vec()).await?;
     Ok(Json(result))
 }
 
@@ -346,11 +305,7 @@ pub async fn export_genesis_handler(
     State(manager): State<Arc<WalletManager>>,
     Path((wallet_name, contract_id)): Path<(String, String)>,
 ) -> Result<Json<ExportGenesisResponse>, crate::error::WalletError> {
-    if !manager.storage.wallet_exists(&wallet_name) {
-        return Err(crate::error::WalletError::WalletNotFound(wallet_name));
-    }
-
-    let result = manager.export_genesis_consignment(&wallet_name, &contract_id)?;
+    let result = manager.export_genesis_consignment(&wallet_name, &contract_id).await?;
     Ok(Json(result))
 }
 

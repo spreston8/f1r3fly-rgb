@@ -25,7 +25,9 @@ impl KeyManager {
     }
 
     fn derive_keys(mnemonic: Mnemonic) -> Result<WalletKeys, crate::error::WalletError> {
-        let network = Network::Signet;
+        // Load network from config
+        let config = crate::config::WalletConfig::from_env();
+        let network = config.bitcoin_network;
         let secp = Secp256k1::new();
 
         let seed = mnemonic.to_seed("");

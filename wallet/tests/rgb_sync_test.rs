@@ -82,7 +82,11 @@ fn test_rgb_sync_duration() {
     // Create minimal wallet structure
     test_dir.create_test_wallet(wallet_name);
 
-    let rgb_runtime_manager = RgbRuntimeManager::new(test_dir.path().clone(), Network::Signet);
+    let rgb_runtime_manager = RgbRuntimeManager::new(
+        test_dir.path().clone(),
+        Network::Signet,
+        "https://mempool.space/signet/api".to_string(),
+    );
 
     log::info!("Initializing RGB runtime for wallet: {}", wallet_name);
     let mut runtime = rgb_runtime_manager

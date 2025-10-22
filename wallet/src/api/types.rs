@@ -58,6 +58,26 @@ pub struct SendBitcoinResponse {
 pub struct GenerateInvoiceRequest {
     pub contract_id: String,
     pub amount: Option<u64>,
+    pub utxo_selection: Option<UtxoSelection>,
+    pub nonce: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type")]
+pub enum UtxoSelection {
+    #[serde(rename = "auto")]
+    Auto,
+    #[serde(rename = "specific")]
+    Specific { txid: String, vout: u32 },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UtxoInfo {
+    pub txid: String,
+    pub vout: u32,
+    pub amount_sats: u64,
+    pub address: String,
+    pub confirmations: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +86,7 @@ pub struct GenerateInvoiceResponse {
     pub contract_id: String,
     pub amount: Option<u64>,
     pub seal_utxo: String,
+    pub selected_utxo: Option<UtxoInfo>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -178,4 +199,5 @@ pub struct GenerateInvoiceResult {
     pub contract_id: String,
     pub amount: Option<u64>,
     pub seal_utxo: String,
+    pub selected_utxo: Option<UtxoInfo>,
 }

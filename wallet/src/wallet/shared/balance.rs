@@ -7,10 +7,11 @@ pub struct BalanceChecker {
 }
 
 impl BalanceChecker {
-    pub fn new() -> Self {
+    /// Create a new BalanceChecker with the specified Esplora API URL
+    pub fn new(base_url: String) -> Self {
         Self {
             client: reqwest::Client::new(),
-            base_url: "https://mempool.space/signet/api".to_string(),
+            base_url,
         }
     }
 

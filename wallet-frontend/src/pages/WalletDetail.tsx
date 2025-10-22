@@ -39,6 +39,7 @@ export default function WalletDetail() {
   const [showDeleteWalletModal, setShowDeleteWalletModal] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<{ contractId: string; ticker: string } | null>(null);
   const [selectedAssetForExport, setSelectedAssetForExport] = useState<{ contractId: string; ticker: string } | null>(null);
+  const [consignmentImportType, setConsignmentImportType] = useState<'transfer' | 'genesis' | null>(null);
 
   const loadWalletData = useCallback(async () => {
     if (!name) return;
@@ -165,12 +166,6 @@ export default function WalletDetail() {
         <h2 className="text-3xl font-bold text-gray-900 dark:text-white">💰 {name}</h2>
         <div className="flex gap-2">
           <button
-            onClick={() => setShowAcceptConsignmentModal(true)}
-            className="px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-md transition-colors font-medium"
-          >
-            📥 Import Consignment
-          </button>
-          <button
             onClick={() => setShowSendBitcoinModal(true)}
             className="px-4 py-2 bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 text-white rounded-md transition-colors font-medium"
           >
@@ -206,28 +201,117 @@ export default function WalletDetail() {
       )}
 
       {/* RGB Assets Section */}
-      {balance && balance.known_contracts && balance.known_contracts.length > 0 && (
+      {balance && balance.known_contracts && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-900 p-6">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-              🪙 RGB Assets
+              🪙 RGB Assets {balance.known_contracts.length > 0 && `(${balance.known_contracts.length})`}
             </h3>
-            {syncingRgb && (
-              <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
-                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <span>Syncing RGB state...</span>
-              </div>
-            )}
+            <div className="flex items-center gap-3">
+              {syncingRgb && (
+                <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
+                  <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span>Syncing RGB state...</span>
+                </div>
+              )}
+              <button
+                onClick={() => {
+                  setConsignmentImportType('transfer');
+                  setShowAcceptConsignmentModal(true);
+                }}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-md transition-colors font-medium text-sm"
+                title="Receive tokens someone sent you"
+              >
+                📥 Accept Transfer
+              </button>
+              <button
+                onClick={() => {
+                  setConsignmentImportType('genesis');
+                  setShowAcceptConsignmentModal(true);
+                }}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium text-sm"
+                title="Learn about a new RGB contract"
+              >
+                📦 Import Asset
+              </button>
+            </div>
           </div>
           <div className="space-y-3">
-            {balance.known_contracts.map((contract) => (
-              <div
-                key={contract.contract_id}
-                className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600"
-              >
+            {balance.known_contracts.length === 0 ? (
+              /* Empty State */
+              <div className="py-8 px-4">
+                <div className="text-center mb-6">
+                  <div className="text-4xl mb-3">🪙</div>
+                  <h4 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+                    No RGB Assets Yet
+                  </h4>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    Choose how you want to get started:
+                  </p>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                  {/* Accept Transfer Card */}
+                  <div className="p-6 bg-purple-50 dark:bg-purple-900/20 border-2 border-purple-300 dark:border-purple-700 rounded-lg">
+                    <div className="text-3xl mb-3 text-center">📥</div>
+                    <h5 className="text-lg font-bold text-purple-900 dark:text-purple-200 mb-2 text-center">
+                      Accept Transfer
+                    </h5>
+                    <p className="text-sm text-purple-800 dark:text-purple-300 mb-4">
+                      Someone sent you tokens and gave you a <strong>transfer file</strong>? Upload it here to receive them.
+                    </p>
+                    <button
+                      onClick={() => {
+                        setConsignmentImportType('transfer');
+                        setShowAcceptConsignmentModal(true);
+                      }}
+                      className="w-full px-4 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white rounded-md transition-colors font-medium"
+                    >
+                      📥 Accept Transfer File
+                    </button>
+                  </div>
+
+                  {/* Import Asset Card */}
+                  <div className="p-6 bg-green-50 dark:bg-green-900/20 border-2 border-green-300 dark:border-green-700 rounded-lg">
+                    <div className="text-3xl mb-3 text-center">📦</div>
+                    <h5 className="text-lg font-bold text-green-900 dark:text-green-200 mb-2 text-center">
+                      Import Asset
+                    </h5>
+                    <p className="text-sm text-green-800 dark:text-green-300 mb-4">
+                      Want to learn about a new RGB contract? Import a <strong>genesis file</strong> to see it in your wallet.
+                    </p>
+                    <button
+                      onClick={() => {
+                        setConsignmentImportType('genesis');
+                        setShowAcceptConsignmentModal(true);
+                      }}
+                      className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white rounded-md transition-colors font-medium"
+                    >
+                      📦 Import Genesis File
+                    </button>
+                  </div>
+                </div>
+
+                {/* Issue Asset remains below */}
+                <div className="flex justify-center">
+                  <button
+                    onClick={() => setShowIssueAssetModal(true)}
+                    className="px-6 py-3 bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white rounded-lg transition-colors font-medium"
+                  >
+                    🎨 Or Issue Your Own Asset
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Existing asset list */
+              balance.known_contracts.map((contract) => (
+                <div
+                  key={contract.contract_id}
+                  className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600"
+                >
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <span className="px-2 py-1 bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-300 text-xs font-semibold rounded">
@@ -288,7 +372,8 @@ export default function WalletDetail() {
                   </button>
                 </div>
               </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
       )}
@@ -425,6 +510,7 @@ export default function WalletDetail() {
           walletName={name || ''}
           contractId={selectedAsset.contractId}
           assetTicker={selectedAsset.ticker}
+          availableUtxos={balance?.utxos || []}
           isOpen={showGenerateInvoiceModal}
           onClose={() => {
             setShowGenerateInvoiceModal(false);
@@ -447,9 +533,14 @@ export default function WalletDetail() {
       <AcceptConsignmentModal
         walletName={name || ''}
         isOpen={showAcceptConsignmentModal}
-        onClose={() => setShowAcceptConsignmentModal(false)}
+        importType={consignmentImportType}
+        onClose={() => {
+          setShowAcceptConsignmentModal(false);
+          setConsignmentImportType(null);
+        }}
         onSuccess={() => {
           setShowAcceptConsignmentModal(false);
+          setConsignmentImportType(null);
           loadWalletData();
         }}
       />

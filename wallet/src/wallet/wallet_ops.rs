@@ -4,7 +4,6 @@
 use super::shared::*;
 use crate::api::types::{WalletInfo, WalletMetadata};
 use crate::error::WalletError;
-use bitcoin::Network;
 use chrono::Utc;
 
 /// Create a new wallet with a generated mnemonic
@@ -26,7 +25,7 @@ pub fn create_wallet(storage: &Storage, name: &str) -> Result<WalletInfo, Wallet
     storage.save_mnemonic(name, &keys.mnemonic)?;
     storage.save_descriptor(name, &keys.descriptor)?;
 
-    let first_address = AddressManager::derive_address(&keys.descriptor, 0, Network::Signet)?;
+    let first_address = AddressManager::derive_address(&keys.descriptor, 0, keys.network)?;
     let public_address = first_address.clone();
 
     Ok(WalletInfo {
@@ -61,7 +60,7 @@ pub fn import_wallet(
     storage.save_mnemonic(name, &keys.mnemonic)?;
     storage.save_descriptor(name, &keys.descriptor)?;
 
-    let first_address = AddressManager::derive_address(&keys.descriptor, 0, Network::Signet)?;
+    let first_address = AddressManager::derive_address(&keys.descriptor, 0, keys.network)?;
     let public_address = first_address.clone();
 
     Ok(WalletInfo {

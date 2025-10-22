@@ -16,7 +16,7 @@ export default function CreateUtxoModal({
   onSuccess,
 }: CreateUtxoModalProps) {
   const [mode, setMode] = useState<'default' | 'custom'>('default');
-  const [customAmount, setCustomAmount] = useState('0.0003');
+  const [customAmount, setCustomAmount] = useState('0.0002');
   const [customFeeRate, setCustomFeeRate] = useState('2');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +29,14 @@ export default function CreateUtxoModal({
     setLoading(true);
 
     try {
+      // Validate minimum amount for custom mode
+      if (mode === 'custom') {
+        const amountSats = parseFloat(customAmount) * 100_000_000;
+        if (amountSats < 20_000) {
+          throw new Error('Custom UTXO amount must be at least 20,000 sats (0.0002 BTC)');
+        }
+      }
+
       const body = mode === 'default' 
         ? {} 
         : {
@@ -153,13 +161,16 @@ export default function CreateUtxoModal({
                   <input
                     type="number"
                     step="0.00000001"
-                    min="0.0001"
+                    min="0.0002"
                     max={currentBalanceBTC}
                     value={customAmount}
                     onChange={(e) => setCustomAmount(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary dark:focus:ring-blue-500 focus:border-transparent"
                     required
                   />
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                    Minimum: 0.0002 BTC (20,000 sats)
+                  </p>
                 </div>
 
                 <div>

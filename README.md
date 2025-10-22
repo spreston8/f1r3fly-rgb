@@ -65,7 +65,11 @@ See [wallet-frontend/README.md](./wallet-frontend/README.md) for detailed docume
 
 3. Open `http://localhost:5173` in your browser
 
-### Testing
+### Debug logs for wallet module only
+
+`RUST_LOG=wallet=debug cargo run`
+
+## Testing
 
 Run all tests across the project (excluding f1r3node):
 ```bash

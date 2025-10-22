@@ -9,14 +9,20 @@ use rgbp::{FileHolder, Owner, RgbpRuntimeDir};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+#[derive(Clone)]
 pub struct RgbRuntimeManager {
     base_path: PathBuf,
     network: Network,
+    esplora_url: String,
 }
 
 impl RgbRuntimeManager {
-    pub fn new(base_path: PathBuf, network: Network) -> Self {
-        Self { base_path, network }
+    pub fn new(base_path: PathBuf, network: Network, esplora_url: String) -> Self {
+        Self {
+            base_path,
+            network,
+            esplora_url,
+        }
     }
 
     /// Initialize RGB Runtime without blockchain sync (uses cached state)
@@ -54,7 +60,7 @@ impl RgbRuntimeManager {
     }
 
     fn create_resolver(&self) -> Result<MultiResolver, crate::error::WalletError> {
-        MultiResolver::new_esplora("https://mempool.space/signet/api")
+        MultiResolver::new_esplora(&self.esplora_url)
             .map_err(|e| crate::error::WalletError::Network(e.to_string()))
     }
 
@@ -92,6 +98,16 @@ impl RgbRuntimeManager {
         wallet_name: &str,
     ) -> Result<Contracts<StockpileDir<TxoSeal>>, crate::error::WalletError> {
         let rgb_data_dir = self.base_path.join(wallet_name).join("rgb_data");
+        
+        // Create rgb_data directory if it doesn't exist (for wallets without RGB assets yet)
+        if !rgb_data_dir.exists() {
+            log::debug!("Creating RGB data directory for wallet: {}", wallet_name);
+            std::fs::create_dir_all(&rgb_data_dir).map_err(|e| {
+                crate::error::WalletError::Rgb(format!("Failed to create RGB data directory: {:?}", e))
+            })?;
+            log::debug!("RGB data directory created successfully");
+        }
+        
         let stockpile =
             StockpileDir::load(rgb_data_dir, Consensus::Bitcoin, true).map_err(|e| {
                 crate::error::WalletError::Rgb(format!("Failed to load stockpile: {:?}", e))

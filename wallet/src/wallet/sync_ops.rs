@@ -51,16 +51,16 @@ pub async fn sync_wallet(
 /// Sync RGB runtime with blockchain (public API)
 pub fn sync_rgb_runtime(
     storage: &Storage,
-    rgb_runtime_manager: &RgbRuntimeManager,
+    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
     wallet_name: &str,
 ) -> Result<(), WalletError> {
-    sync_rgb_internal(storage, rgb_runtime_manager, wallet_name, 1, "Syncing RGB runtime")
+    sync_rgb_internal(storage, rgb_runtime_cache, wallet_name, 1, "Syncing RGB runtime")
 }
 
-/// Internal RGB sync method with configurable confirmations
+/// Internal RGB sync method with configurable confirmations (Phase 2: Using cached runtime)
 pub(crate) fn sync_rgb_internal(
     storage: &Storage,
-    rgb_runtime_manager: &RgbRuntimeManager,
+    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
     wallet_name: &str,
     confirmations: u32,
     log_prefix: &str,
@@ -71,8 +71,6 @@ pub(crate) fn sync_rgb_internal(
         return Err(WalletError::WalletNotFound(wallet_name.to_string()));
     }
 
-    let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
-
     let conf_str = if confirmations == 1 {
         "1 confirmation".to_string()
     } else {
@@ -81,26 +79,32 @@ pub(crate) fn sync_rgb_internal(
     log::info!("{} ({})", log_prefix, conf_str);
     log::debug!("Starting blockchain scan via Esplora API (this may take 10-15 seconds)...");
 
-    let start = Instant::now();
-    runtime.update(confirmations).map_err(|e| {
-        log::error!("RGB sync failed after {:?}: {:?}", start.elapsed(), e);
-        WalletError::Rgb(format!("RGB sync failed: {:?}", e))
-    })?;
-    let duration = start.elapsed();
+    // Get cached runtime and sync (Phase 2)
+    log::debug!("Acquiring cached RGB runtime for sync operation");
+    let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
 
-    log::info!("RGB state synced in {:?}", duration);
-    if duration.as_secs() > 5 {
-        log::warn!("Sync took longer than expected ({:?}). This is due to sequential Esplora API queries.", duration);
-    }
-    Ok(())
+    guard.execute(|runtime| {
+        let start = Instant::now();
+        runtime.update(confirmations).map_err(|e| {
+            log::error!("RGB sync failed after {:?}: {:?}", start.elapsed(), e);
+            WalletError::Rgb(format!("RGB sync failed: {:?}", e))
+        })?;
+        let duration = start.elapsed();
+
+        log::info!("RGB state synced in {:?}", duration);
+        if duration.as_secs() > 5 {
+            log::warn!("Sync took longer than expected ({:?}). This is due to sequential Esplora API queries.", duration);
+        }
+        Ok(())
+    })
 }
 
-/// Sync RGB runtime after a state-changing operation
+/// Sync RGB runtime after a state-changing operation (Phase 2: Using cached runtime)
 pub(crate) fn sync_rgb_after_state_change(
     storage: &Storage,
-    rgb_runtime_manager: &RgbRuntimeManager,
+    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
     wallet_name: &str,
 ) -> Result<(), WalletError> {
-    sync_rgb_internal(storage, rgb_runtime_manager, wallet_name, 1, "Syncing RGB runtime after state change")
+    sync_rgb_internal(storage, rgb_runtime_cache, wallet_name, 1, "Syncing RGB runtime after state change")
 }
 

@@ -11,6 +11,9 @@ use crate::wallet::manager::WalletManager;
 pub async fn start_server(addr: &str) -> anyhow::Result<()> {
     let wallet_manager = Arc::new(WalletManager::new());
 
+    // Start RGB runtime lifecycle manager (Phase 1)
+    wallet_manager.start_lifecycle_manager();
+
     let app = Router::new()
         // Firefly integration
         .route(
@@ -92,11 +95,50 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .with_state(wallet_manager);
+        .with_state(wallet_manager.clone());
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("Server listening on http://{}", addr);
-    axum::serve(listener, app).await?;
+
+    // Serve with graceful shutdown (Phase 1)
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(wallet_manager))
+        .await?;
 
     Ok(())
+}
+
+/// Handle graceful shutdown signals (Ctrl+C, SIGTERM)
+async fn shutdown_signal(manager: Arc<WalletManager>) {
+    // Wait for SIGTERM or Ctrl+C
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            log::info!("Received Ctrl+C signal");
+        },
+        _ = terminate => {
+            log::info!("Received SIGTERM signal");
+        },
+    }
+
+    log::info!("Shutdown signal received, saving RGB runtimes...");
+    if let Err(e) = manager.shutdown().await {
+        log::error!("Error during shutdown: {}", e);
+    }
 }

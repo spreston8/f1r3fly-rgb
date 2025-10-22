@@ -2,14 +2,16 @@
 ///
 /// Handles Bitcoin and RGB balance queries.
 use super::shared::*;
+use super::shared::rgb::BoundAsset;
 use crate::error::WalletError;
 use bitcoin::Network;
+use std::collections::HashMap;
+use bpstd::psbt::PsbtConstructor;
 
-/// Get balance for a wallet (Bitcoin + RGB assets)
-pub async fn get_balance(
+/// Get Bitcoin balance only (async HTTP calls)
+pub async fn get_bitcoin_balance(
     storage: &Storage,
     balance_checker: &BalanceChecker,
-    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
 ) -> Result<balance::BalanceInfo, WalletError> {
     if !storage.wallet_exists(wallet_name) {
@@ -23,6 +25,7 @@ pub async fn get_balance(
     let addresses_with_indices =
         AddressManager::derive_addresses(&descriptor, 0, GAP_LIMIT, Network::Signet)?;
 
+    // Async HTTP calls to Esplora
     let mut balance = balance_checker
         .calculate_balance(&addresses_with_indices)
         .await?;
@@ -37,77 +40,120 @@ pub async fn get_balance(
         balance.display_address
     );
 
-    // Create per-wallet RGB manager
-    let rgb_data_dir = storage.base_dir().join(wallet_name).join("rgb_data");
-    let rgb_manager = RgbManager::new(rgb_data_dir)?;
+    Ok(balance)
+}
 
-    // Check each UTXO for RGB assets
-    for utxo in &mut balance.utxos {
-        let txid = match utxo.txid.parse::<bitcoin::Txid>() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
+/// Get RGB balance only (sync, blocking)
+pub fn get_rgb_balance_sync(
+    _storage: &Storage,
+    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
+    wallet_name: &str,
+    utxos: &[balance::UTXO],
+) -> Result<RgbBalanceData, WalletError> {
+    use hypersonic::StateName;
+    use std::str::FromStr;
+    use bpstd::{Outpoint, Vout};
+    use bitcoin::hashes::Hash;
+    use amplify::ByteArray;
 
-        // Check if UTXO is occupied by RGB assets
-        if let Ok(is_occupied) = rgb_manager.check_utxo_occupied(txid, utxo.vout) {
-            utxo.is_occupied = is_occupied;
+    // Get cached runtime and query balance (Phase 2)
+    log::debug!("Acquiring cached RGB runtime for balance query");
+    let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
 
-            // If occupied, get the bound assets
-            if is_occupied {
-                if let Ok(assets) = rgb_manager.get_bound_assets(txid, utxo.vout) {
-                    utxo.bound_assets = assets;
-                }
-            }
+    guard.execute(|runtime| {
+        let mut utxo_assets: HashMap<String, Vec<BoundAsset>> = HashMap::new();
+        let mut known_contracts = Vec::new();
+
+        // Sync witness confirmations from blockchain
+        log::debug!("Syncing RGB witness confirmations for balance query...");
+        if let Err(e) = runtime.update(1) {
+            log::warn!("Failed to sync RGB witness state for balance query: {:?}", e);
+            // Continue anyway - show balance with cached witness state
+        } else {
+            log::debug!("RGB witness state synced successfully");
         }
-    }
 
-    // Get all known contracts from RGB runtime (even with 0 balance)
-    // Note: Uses cached state for fast loading. Call sync_rgb_runtime() to update.
-    let mut known_contracts = Vec::new();
-    if let Ok(runtime) = rgb_runtime_manager.init_runtime_no_sync(wallet_name) {
-        use hypersonic::StateName;
-        use std::str::FromStr;
+        // Debug: Show registered seal count
+        let seal_count = runtime.wallet.descriptor().seals().count();
+        log::debug!("Checking balance with {} registered seal(s)", seal_count);
 
+        // Now check UTXOs for bound assets using the SYNCED runtime state
         for contract_id in runtime.contracts.contract_ids() {
-            // Get contract state and articles
-            let state = runtime.contracts.contract_state(contract_id);
-            let articles = runtime.contracts.contract_articles(contract_id);
+        let state = runtime.contracts.contract_state(contract_id);
+        let articles = runtime.contracts.contract_articles(contract_id);
 
-            // Extract ticker from immutable state (same as get_bound_assets)
-            let ticker = StateName::from_str("ticker")
-                .ok()
-                .and_then(|name| state.immutable.get(&name))
-                .and_then(|states| states.first())
-                .map(|s| s.data.verified.to_string())
-                .unwrap_or_else(|| "N/A".to_string());
+        // Extract ticker from immutable state
+        let ticker = StateName::from_str("ticker")
+            .ok()
+            .and_then(|name| state.immutable.get(&name))
+            .and_then(|states| states.first())
+            .map(|s| s.data.verified.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
 
-            // Extract name from immutable state or fallback to articles
-            let asset_name = StateName::from_str("name")
-                .ok()
-                .and_then(|name| state.immutable.get(&name))
-                .and_then(|states| states.first())
-                .map(|s| s.data.verified.to_string())
-                .unwrap_or_else(|| articles.issue().meta.name.to_string());
+        // Extract name from immutable state or fallback to articles
+        let asset_name = StateName::from_str("name")
+            .ok()
+            .and_then(|name| state.immutable.get(&name))
+            .and_then(|states| states.first())
+            .map(|s| s.data.verified.to_string())
+            .unwrap_or_else(|| articles.issue().meta.name.to_string());
 
-            // Calculate total balance for this contract
-            let mut total_balance = 0u64;
-            for utxo in &balance.utxos {
-                for asset in &utxo.bound_assets {
-                    if asset.asset_id == contract_id.to_string() {
-                        total_balance += asset.amount.parse::<u64>().unwrap_or(0);
+        // Calculate balance from synced contract state
+        let mut total_balance = 0u64;
+
+        // Check each UTXO against this contract's owned state
+        for utxo in utxos {
+            let txid = match utxo.txid.parse::<bitcoin::Txid>() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            
+            // Convert bitcoin::Txid to bpstd::Txid via byte array
+            let txid_bytes: [u8; 32] = txid.to_byte_array();
+            let bp_txid = bpstd::Txid::from_byte_array(txid_bytes);
+            let target_outpoint = Outpoint::new(bp_txid, Vout::from_u32(utxo.vout));
+
+            // Check if this UTXO has assets from this contract
+            for (_state_name, owned_states) in &state.owned {
+                for owned_state in owned_states {
+                    let seal_outpoint = owned_state.assignment.seal.primary;
+                    if seal_outpoint == target_outpoint {
+                        // Extract amount from the state data (StrictVal)
+                        if let Ok(amount) = owned_state.assignment.data.to_string().parse::<u64>() {
+                            total_balance += amount;
+
+                            // Add to UTXO assets map
+                            let key = format!("{}:{}", utxo.txid, utxo.vout);
+                            utxo_assets.entry(key).or_insert_with(Vec::new).push(BoundAsset {
+                                asset_id: contract_id.to_string(),
+                                ticker: ticker.clone(),
+                                asset_name: asset_name.clone(),
+                                amount: amount.to_string(),
+                            });
+                        }
                     }
                 }
             }
-
-            known_contracts.push(balance::KnownContract {
-                contract_id: contract_id.to_string(),
-                ticker,
-                name: asset_name,
-                balance: total_balance,
-            });
         }
-    }
-    balance.known_contracts = known_contracts;
 
-    Ok(balance)
+        known_contracts.push(balance::KnownContract {
+            contract_id: contract_id.to_string(),
+            ticker,
+            name: asset_name,
+            balance: total_balance,
+        });
+        }
+
+        Ok(RgbBalanceData {
+            utxo_assets,
+            known_contracts,
+        })
+    })
+}
+
+/// RGB balance data structure
+#[derive(Debug)]
+pub struct RgbBalanceData {
+    pub utxo_assets: HashMap<String, Vec<BoundAsset>>,
+    pub known_contracts: Vec<balance::KnownContract>,
 }

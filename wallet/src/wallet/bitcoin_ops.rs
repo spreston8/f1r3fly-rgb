@@ -8,9 +8,15 @@ use crate::api::types::{
     SendBitcoinRequest, SendBitcoinResponse,
     UnlockUtxoRequest, UnlockUtxoResult,
 };
+use crate::config::WalletConfig;
 use crate::error::WalletError;
 use bitcoin::Network;
 use std::str::FromStr;
+
+/// Get Bitcoin network from config
+fn get_network() -> Network {
+    WalletConfig::from_env().bitcoin_network
+}
 
 /// Create a UTXO for RGB operations
 pub async fn create_utxo(
@@ -29,6 +35,9 @@ pub async fn create_utxo(
     };
 
     let fee_rate = request.fee_rate_sat_vb.unwrap_or(2);
+    
+    log::info!("Creating UTXO for wallet: {} (amount: {} sats, fee rate: {} sat/vB)", 
+        wallet_name, amount_sats, fee_rate);
 
     let balance = get_balance_for_tx(storage, balance_checker, wallet_name).await?;
 
@@ -48,10 +57,11 @@ pub async fn create_utxo(
         state.used_addresses.push(target_index);
     }
 
+    let network = get_network();
     let recipient_address =
-        AddressManager::derive_address(&descriptor, target_index, Network::Signet)?;
+        AddressManager::derive_address(&descriptor, target_index, network)?;
 
-    let tx_builder = transaction::TransactionBuilder::new(Network::Signet);
+    let tx_builder = transaction::TransactionBuilder::new(network);
 
     let tx = tx_builder.build_send_to_self(
         &balance.utxos,
@@ -65,7 +75,9 @@ pub async fn create_utxo(
     // Sign transaction with correct keys for each UTXO's address index
     let signed_tx = sign_transaction_multi_key(&tx, &balance.utxos, &mnemonic)?;
 
-    let txid = transaction::broadcast_transaction(&signed_tx, Network::Signet).await?;
+    let txid = transaction::broadcast_transaction(&signed_tx, network).await?;
+    
+    log::debug!("UTXO transaction broadcast successfully: {}", txid);
 
     let total_input: u64 = balance
         .utxos
@@ -90,6 +102,9 @@ pub async fn create_utxo(
             .sum::<u64>();
 
     storage.save_state(wallet_name, &state)?;
+    
+    log::info!("UTXO created successfully: txid={}, amount={} sats, fee={} sats, address={}", 
+        txid, amount_sats, fee_sats, recipient_address);
 
     Ok(CreateUtxoResult {
         txid,
@@ -137,10 +152,11 @@ pub async fn unlock_utxo(
     state.used_addresses.push(destination_index);
     state.internal_next_index += 1;
 
+    let network = get_network();
     let destination_address =
-        AddressManager::derive_address(&descriptor, destination_index, Network::Signet)?;
+        AddressManager::derive_address(&descriptor, destination_index, network)?;
 
-    let tx_builder = transaction::TransactionBuilder::new(Network::Signet);
+    let tx_builder = transaction::TransactionBuilder::new(network);
 
     let tx =
         tx_builder.build_unlock_utxo_tx(&target_utxo, destination_address.clone(), fee_rate)?;
@@ -151,7 +167,7 @@ pub async fn unlock_utxo(
     let signed_tx =
         sign_transaction_multi_key(&tx, &vec![target_utxo.clone()], &mnemonic)?;
 
-    let txid = transaction::broadcast_transaction(&signed_tx, Network::Signet).await?;
+    let txid = transaction::broadcast_transaction(&signed_tx, network).await?;
 
     let fee_sats = target_utxo.amount_sats - signed_tx.output[0].value.to_sat();
     let recovered_sats = signed_tx.output[0].value.to_sat();
@@ -180,11 +196,12 @@ pub async fn send_bitcoin(
     }
 
     // Parse destination address
+    let network = get_network();
     let to_address = bitcoin::Address::from_str(&request.to_address)
         .map_err(|e| {
             WalletError::InvalidInput(format!("Invalid address: {}", e))
         })?
-        .require_network(Network::Signet)
+        .require_network(network)
         .map_err(|e| {
             WalletError::InvalidInput(format!("Address network mismatch: {}", e))
         })?;
@@ -246,10 +263,10 @@ pub async fn send_bitcoin(
     state.internal_next_index += 1;
     
     let change_address =
-        AddressManager::derive_address(&descriptor, change_index, Network::Signet)?;
+        AddressManager::derive_address(&descriptor, change_index, network)?;
 
     // Build transaction
-    let tx_builder = transaction::TransactionBuilder::new(Network::Signet);
+    let tx_builder = transaction::TransactionBuilder::new(network);
     let tx = tx_builder.build_send_tx(
         &selected_utxos,
         to_address.clone(),
@@ -268,7 +285,7 @@ pub async fn send_bitcoin(
     let fee_sats = total_input - total_output;
 
     // Broadcast
-    let txid = transaction::broadcast_transaction(&signed_tx, Network::Signet).await?;
+    let txid = transaction::broadcast_transaction(&signed_tx, network).await?;
     log::info!("Bitcoin sent - txid: {}", txid);
 
     storage.save_state(wallet_name, &state)?;
@@ -293,8 +310,9 @@ async fn get_balance_for_tx(
 ) -> Result<balance::BalanceInfo, WalletError> {
     let descriptor = storage.load_descriptor(wallet_name)?;
     const GAP_LIMIT: u32 = 20;
+    let network = get_network();
     let addresses_with_indices =
-        AddressManager::derive_addresses(&descriptor, 0, GAP_LIMIT, Network::Signet)?;
+        AddressManager::derive_addresses(&descriptor, 0, GAP_LIMIT, network)?;
     balance_checker.calculate_balance(&addresses_with_indices).await
 }
 
@@ -303,12 +321,18 @@ fn derive_private_key_for_index(
     mnemonic: &bip39::Mnemonic,
     address_index: u32,
 ) -> Result<bitcoin::PrivateKey, WalletError> {
+    let network = get_network();
     let seed = mnemonic.to_seed("");
-    let master_key = bitcoin::bip32::Xpriv::new_master(Network::Signet, &seed)
+    let master_key = bitcoin::bip32::Xpriv::new_master(network, &seed)
         .map_err(|e| WalletError::Bitcoin(e.to_string()))?;
 
+    // Use coin type 1 for all test networks (Signet, Regtest, Testnet)
+    let coin_type = match network {
+        Network::Bitcoin => 0,
+        _ => 1,
+    };
     let path =
-        bitcoin::bip32::DerivationPath::from_str(&format!("m/84'/1'/0'/0/{}", address_index))
+        bitcoin::bip32::DerivationPath::from_str(&format!("m/84'/{}'/'0'/0/{}", coin_type, address_index))
             .map_err(|e| WalletError::Bitcoin(e.to_string()))?;
 
     let derived_key = master_key
@@ -317,7 +341,7 @@ fn derive_private_key_for_index(
 
     Ok(bitcoin::PrivateKey::new(
         derived_key.private_key,
-        Network::Signet,
+        network,
     ))
 }
 
@@ -334,6 +358,7 @@ fn sign_transaction_multi_key(
 
     let mut signed_tx = tx.clone();
     let secp = Secp256k1::new();
+    let network = get_network();
 
     for (input_index, input) in tx.input.iter().enumerate() {
         // Find the UTXO for this input
@@ -354,7 +379,7 @@ fn sign_transaction_multi_key(
         let private_key = derive_private_key_for_index(mnemonic, utxo.address_index)?;
         let public_key = PublicKey::from_private_key(&secp, &private_key);
         let script_pubkey =
-            bitcoin::Address::p2wpkh(&public_key.try_into().unwrap(), Network::Signet)
+            bitcoin::Address::p2wpkh(&public_key.try_into().unwrap(), network)
                 .script_pubkey();
 
         // Create signature for this input
