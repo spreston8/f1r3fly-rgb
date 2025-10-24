@@ -34,8 +34,11 @@ impl WalletManager {
             config.esplora_url.clone(),
         );
         
-        // Initialize Firefly client (gRPC port 40401, HTTP port 40403)
-        let firefly_client = Some(FireflyClient::new("localhost", 40401));
+        // Initialize Firefly client from config
+        let firefly_client = Some(FireflyClient::new(
+            &config.firefly_host,
+            config.firefly_grpc_port,
+        ));
         
         Self {
             config: config.clone(),
