@@ -3,6 +3,9 @@ use std::env;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file if it exists
+    dotenv::dotenv().ok();
+    
     // Initialize logger (set RUST_LOG=debug for verbose output, RUST_LOG=info for normal)
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     
