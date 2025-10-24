@@ -114,6 +114,26 @@ export default function Home() {
           </a>
         </div>
       </div>
+
+      <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-6 mt-6">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">
+          📋 RGB Transfer Steps
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          Step-by-step guide for performing RGB asset transfers:
+        </p>
+        <a
+          href="https://github.com/spreston8/f1r3fly-rgb/blob/def5c50dd3f8a7eef46f3a3d2cb123992739c9e7/rgb_transfer_steps.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white text-sm font-medium rounded-md transition-colors"
+        >
+          📖 View Transfer Guide
+          <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+          </svg>
+        </a>
+      </div>
     </div>
   );
 }
