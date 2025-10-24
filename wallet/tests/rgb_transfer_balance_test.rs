@@ -134,7 +134,7 @@ async fn run_test_logic(timeout: u64, fee_rate: u64) -> anyhow::Result<()> {
     
     // Try to find a reusable UTXO from previous test run
     log::info!("\nPreparing UTXO for RGB genesis...");
-    const TEST_UTXO_MIN: u64 = 20_000;  // Minimum for test UTXOs
+    const TEST_UTXO_MIN: u64 = 17_000;  // Minimum for test UTXOs
     const TEST_UTXO_MAX: u64 = 50_000;  // Maximum for test UTXOs
     
     let suitable_utxo = initial_balance.utxos.iter()
