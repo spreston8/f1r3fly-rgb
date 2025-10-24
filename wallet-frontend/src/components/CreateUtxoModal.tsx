@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { walletApi } from '../api';
+import type { CreateUtxoRequest } from '../api/types';
 
 interface CreateUtxoModalProps {
   walletName: string;
@@ -37,23 +39,14 @@ export default function CreateUtxoModal({
         }
       }
 
-      const body = mode === 'default' 
+      const body: CreateUtxoRequest = mode === 'default' 
         ? {} 
         : {
             amount_btc: parseFloat(customAmount),
             fee_rate_sat_vb: parseInt(customFeeRate),
           };
 
-      const response = await fetch(`/api/wallet/${walletName}/create-utxo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to create UTXO');
-      }
+      await walletApi.createUtxo(walletName, body);
 
       onSuccess();
       onClose();
