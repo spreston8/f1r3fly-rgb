@@ -11,9 +11,6 @@ use crate::wallet::manager::WalletManager;
 pub async fn start_server(addr: &str) -> anyhow::Result<()> {
     let wallet_manager = Arc::new(WalletManager::new());
 
-    // Start RGB runtime lifecycle manager (Phase 1)
-    wallet_manager.start_lifecycle_manager();
-
     let app = Router::new()
         // Firefly integration
         .route(
@@ -109,7 +106,7 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
 }
 
 /// Handle graceful shutdown signals (Ctrl+C, SIGTERM)
-async fn shutdown_signal(manager: Arc<WalletManager>) {
+async fn shutdown_signal(_manager: Arc<WalletManager>) {
     // Wait for SIGTERM or Ctrl+C
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -137,8 +134,6 @@ async fn shutdown_signal(manager: Arc<WalletManager>) {
         },
     }
 
-    log::info!("Shutdown signal received, saving RGB runtimes...");
-    if let Err(e) = manager.shutdown().await {
-        log::error!("Error during shutdown: {}", e);
-    }
+    log::info!("Shutdown signal received, exiting gracefully...");
+    // With ephemeral runtimes, no manual shutdown is needed - all state is auto-saved via FileHolder::drop()
 }

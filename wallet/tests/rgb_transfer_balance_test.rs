@@ -58,7 +58,8 @@ use wallet::api::types::{CreateUtxoRequest, GenerateInvoiceRequest, SendBitcoinR
 // Import test utilities
 use common::{
     TestEnvironment, TestNetworkConfig,
-    wait_for_confirmation, print_rgb_balance, find_vout_for_amount,
+    wait_for_confirmation, wait_for_electrs_sync, ensure_rgb_sync_delay,
+    print_rgb_balance, find_vout_for_amount,
 };
 
 /// Main test logic - extracted for Control-C handling
@@ -106,6 +107,15 @@ async fn run_test_logic(timeout: u64, fee_rate: u64) -> anyhow::Result<()> {
     let sync_result = env.manager.sync_wallet(&env.wallet1_name).await?;
     log::info!("✓ Wallet synced to height {}, checked {} addresses, found {} new txs", 
         sync_result.synced_height, sync_result.addresses_checked, sync_result.new_transactions);
+    
+    // Regtest: Ensure coinbase maturity (100 blocks)
+    if network_config.is_regtest {
+        log::info!("🔨 Mining blocks to mature coinbase outputs (Bitcoin requires 100 confirmations)...");
+        for _ in 0..100 {
+            common::mine_regtest_block(&network_config.esplora_url).await?;
+        }
+        log::info!("✓ Mined 100 blocks for coinbase maturity");
+    }
     
     // Check initial balance
     let initial_balance = env.manager.get_balance(&env.wallet1_name).await?;
@@ -161,6 +171,12 @@ async fn run_test_logic(timeout: u64, fee_rate: u64) -> anyhow::Result<()> {
         log::info!("\n⏳ Waiting for UTXO confirmation...");
         let utxo_block = wait_for_confirmation(&utxo_resp.txid, &network_config, timeout).await?;
         log::info!("✅ UTXO confirmed in block {}!", utxo_block);
+        
+        // Wait for Electrs to index this block
+        if network_config.is_regtest {
+            wait_for_electrs_sync(&network_config.esplora_url, utxo_block).await?;
+            ensure_rgb_sync_delay(true).await;
+        }
         
         // Find the correct vout by querying the transaction
         log::info!("\nFinding correct vout for genesis UTXO...");
@@ -223,6 +239,15 @@ async fn run_test_logic(timeout: u64, fee_rate: u64) -> anyhow::Result<()> {
     
     log::info!("\n--- Phase 2: Transfer Execution ---\n");
     
+    // Regtest: Mine more blocks to mature any new coinbase outputs created during Phase 1
+    if network_config.is_regtest {
+        log::info!("🔨 Mining 100 more blocks to mature recent coinbase outputs...");
+        for _ in 0..100 {
+            common::mine_regtest_block(&network_config.esplora_url).await?;
+        }
+        log::info!("✓ Mined 100 blocks - all coinbase outputs now mature");
+    }
+    
     // Check if recipient already has a suitable UTXO from previous test run
     log::info!("Checking if recipient needs funding...");
     const RECIPIENT_MIN_UTXO: u64 = 5_000;   // Minimum needed for AuthToken generation
@@ -261,8 +286,14 @@ async fn run_test_logic(timeout: u64, fee_rate: u64) -> anyhow::Result<()> {
         
         // Wait for confirmation
         log::info!("\n⏳ Waiting for funding tx confirmation...");
-        wait_for_confirmation(&fund_tx.txid, &network_config, timeout).await?;
+        let fund_block = wait_for_confirmation(&fund_tx.txid, &network_config, timeout).await?;
         log::info!("✅ Recipient funded!");
+        
+        // Wait for Electrs to index this block
+        if network_config.is_regtest {
+            wait_for_electrs_sync(&network_config.esplora_url, fund_block).await?;
+            ensure_rgb_sync_delay(true).await;
+        }
         
         // Sync recipient wallet to see the new UTXO
         log::info!("Syncing recipient wallet...");
@@ -313,6 +344,15 @@ async fn run_test_logic(timeout: u64, fee_rate: u64) -> anyhow::Result<()> {
     log::info!("\n⏳ Waiting for transfer confirmation...");
     let transfer_block = wait_for_confirmation(&transfer_resp.bitcoin_txid, &network_config, timeout).await?;
     log::info!("✅ Transfer confirmed in block {}!", transfer_block);
+    
+    // 🔧 CRITICAL: Wait for Electrs to fully index the witness transaction
+    // RGB needs the witness data to update allocations, and Electrs must index it first
+    if network_config.is_regtest {
+        log::info!("⏳ Waiting for Electrs to index witness transaction...");
+        wait_for_electrs_sync(&network_config.esplora_url, transfer_block).await?;
+        ensure_rgb_sync_delay(true).await;
+        log::info!("✓ Electrs sync complete");
+    }
     
     // ============================================================================
     // CRITICAL TEST POINT 1: Balance after witness confirmation

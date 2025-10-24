@@ -293,11 +293,19 @@ pub async fn broadcast_transaction(
 ) -> Result<String, crate::error::WalletError> {
     let tx_hex = bitcoin::consensus::encode::serialize_hex(tx);
 
-    let base_url = match network {
-        Network::Signet => "https://mempool.space/signet/api",
-        Network::Testnet => "https://mempool.space/testnet/api",
-        _ => "https://mempool.space/api",
+    // Use configured Esplora URL for Regtest, otherwise use mempool.space
+    let base_url = if matches!(network, Network::Regtest) {
+        let config = crate::config::WalletConfig::from_env();
+        config.esplora_url
+    } else {
+        match network {
+            Network::Signet => "https://mempool.space/signet/api".to_string(),
+            Network::Testnet => "https://mempool.space/testnet/api".to_string(),
+            _ => "https://mempool.space/api".to_string(),
+        }
     };
+
+    log::debug!("Broadcasting transaction to: {}/tx", base_url);
 
     let client = reqwest::Client::new();
     let response = client

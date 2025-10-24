@@ -7,23 +7,14 @@ use crate::api::types::*;
 use crate::config::WalletConfig;
 use crate::error::WalletError;
 use crate::firefly::FireflyClient;
-use bpstd::psbt::PsbtConstructor;
 use std::str::FromStr;
-use std::sync::Arc;
-use ::rgb::popls::bp::WalletProvider;
-use ::rgb::RgbSealDef;
-use commit_verify::{Digest, DigestExt, Sha256};
 
 pub struct WalletManager {
     pub config: WalletConfig,
     pub storage: Storage,
     balance_checker: BalanceChecker,
-    // OLD: Ephemeral runtime creation (Phase 1: keep for parallel operation)
+    // Ephemeral runtime creation (matches RGB CLI architecture)
     rgb_runtime_manager: RgbRuntimeManager,
-    // NEW: Long-lived runtime cache (Phase 1: added, Phase 2: will use)
-    pub rgb_runtime_cache: Arc<RgbRuntimeCache>,
-    // NEW: Lifecycle manager for background tasks (Phase 1: added, Phase 2: will use)
-    pub rgb_lifecycle_manager: Arc<RuntimeLifecycleManager>,
     pub firefly_client: Option<FireflyClient>,
 }
 
@@ -43,20 +34,6 @@ impl WalletManager {
             config.esplora_url.clone(),
         );
         
-        // Initialize RGB runtime cache (Phase 1)
-        let rgb_runtime_cache = Arc::new(RgbRuntimeCache::new(
-            storage.base_dir().clone(),
-            config.bpstd_network,
-            config.esplora_url.clone(),
-        ));
-        
-        // Initialize lifecycle manager (Phase 1)
-        let lifecycle_config = LifecycleConfig::default();
-        let rgb_lifecycle_manager = Arc::new(RuntimeLifecycleManager::new(
-            rgb_runtime_cache.clone(),
-            lifecycle_config,
-        ));
-        
         // Initialize Firefly client (gRPC port 40401, HTTP port 40403)
         let firefly_client = Some(FireflyClient::new("localhost", 40401));
         
@@ -65,8 +42,6 @@ impl WalletManager {
             storage,
             balance_checker: BalanceChecker::new(config.esplora_url.clone()),
             rgb_runtime_manager,
-            rgb_runtime_cache,
-            rgb_lifecycle_manager,
             firefly_client,
         }
     }
@@ -82,20 +57,6 @@ impl WalletManager {
             config.esplora_url.clone(),
         );
         
-        // Initialize RGB runtime cache (Phase 1)
-        let rgb_runtime_cache = Arc::new(RgbRuntimeCache::new(
-            storage.base_dir().clone(),
-            config.bpstd_network,
-            config.esplora_url.clone(),
-        ));
-        
-        // Initialize lifecycle manager (Phase 1)
-        let lifecycle_config = LifecycleConfig::default();
-        let rgb_lifecycle_manager = Arc::new(RuntimeLifecycleManager::new(
-            rgb_runtime_cache.clone(),
-            lifecycle_config,
-        ));
-        
         // No Firefly client in tests
         let firefly_client = None;
         
@@ -104,8 +65,6 @@ impl WalletManager {
             storage,
             balance_checker: BalanceChecker::new(config.esplora_url.clone()),
             rgb_runtime_manager,
-            rgb_runtime_cache,
-            rgb_lifecycle_manager,
             firefly_client,
         }
     }
@@ -170,14 +129,14 @@ impl WalletManager {
         )
         .await?;
         
-        // Phase 2: Get RGB balance (spawn_blocking for FileHolder operations) with cached runtime
+        // Phase 2: Get RGB balance (spawn_blocking for FileHolder operations)
         let storage = self.storage.clone();
-        let rgb_cache = self.rgb_runtime_cache.clone();
+        let rgb_mgr = self.rgb_runtime_manager.clone();
         let name_clone = name.to_string();
         let utxos_clone = balance.utxos.clone();
         
         let rgb_data = tokio::task::spawn_blocking(move || {
-            super::balance_ops::get_rgb_balance_sync(&storage, &rgb_cache, &name_clone, &utxos_clone)
+            super::balance_ops::get_rgb_balance_sync(&storage, &rgb_mgr, &name_clone, &utxos_clone)
         })
         .await
         .map_err(|e| WalletError::Internal(format!("Get RGB balance task panicked: {}", e)))?
@@ -235,25 +194,24 @@ impl WalletManager {
     // RGB Operations - Async Wrappers (Public API)
     // ============================================================================
 
-    /// Issue RGB asset (Phase 2: Using cached runtime)
+    /// Issue RGB asset (using ephemeral runtime like RGB CLI)
     pub async fn issue_asset(
         &self,
         wallet_name: &str,
         request: IssueAssetRequest,
     ) -> Result<IssueAssetResponse, WalletError> {
         let storage = self.storage.clone();
-        let rgb_cache = self.rgb_runtime_cache.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         
         tokio::task::spawn_blocking(move || {
-            Self::issue_asset_blocking(&storage, &rgb_cache, &rgb_mgr, &wallet_name, request)
+            Self::issue_asset_blocking(&storage, &rgb_mgr, &wallet_name, request)
         })
         .await
         .map_err(|e| WalletError::Internal(format!("Issue asset task panicked: {}", e)))?
     }
 
-    /// Generate RGB invoice (Phase 2: Using cached runtime)
+    /// Generate RGB invoice (using ephemeral runtime like RGB CLI)
     pub async fn generate_rgb_invoice(
         &self,
         wallet_name: &str,
@@ -277,20 +235,19 @@ impl WalletManager {
             _ => None,
         };
         
-        // Phase 2: Generate invoice in blocking context (sync RGB operations with cached runtime)
+        // Phase 2: Generate invoice in blocking context (sync RGB operations)
         let storage = self.storage.clone();
-        let rgb_cache = self.rgb_runtime_cache.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         
         tokio::task::spawn_blocking(move || {
-            Self::generate_rgb_invoice_blocking(&storage, &rgb_cache, &rgb_mgr, &wallet_name, request, utxo_info)
+            Self::generate_rgb_invoice_blocking(&storage, &rgb_mgr, &wallet_name, request, utxo_info)
         })
         .await
         .map_err(|e| WalletError::Internal(format!("Generate invoice task panicked: {}", e)))?
     }
 
-    /// Send RGB transfer (Phase 2: Using cached runtime)
+    /// Send RGB transfer (using ephemeral runtime like RGB CLI)
     pub async fn send_transfer(
         &self,
         wallet_name: &str,
@@ -298,50 +255,47 @@ impl WalletManager {
         fee_rate_sat_vb: Option<u64>,
     ) -> Result<SendTransferResponse, WalletError> {
         let storage = self.storage.clone();
-        let rgb_cache = self.rgb_runtime_cache.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         let invoice_str = invoice_str.to_string();
         
         tokio::task::spawn_blocking(move || {
-            Self::send_transfer_blocking(&storage, &rgb_cache, &rgb_mgr, &wallet_name, &invoice_str, fee_rate_sat_vb)
+            Self::send_transfer_blocking(&storage, &rgb_mgr, &wallet_name, &invoice_str, fee_rate_sat_vb)
         })
                 .await
         .map_err(|e| WalletError::Internal(format!("Send transfer task panicked: {}", e)))?
     }
 
-    /// Accept RGB consignment (Phase 2: Using cached runtime)
+    /// Accept RGB consignment (using ephemeral runtime like RGB CLI)
     pub async fn accept_consignment(
         &self,
         wallet_name: &str,
         consignment_bytes: Vec<u8>,
     ) -> Result<AcceptConsignmentResponse, WalletError> {
         let storage = self.storage.clone();
-        let rgb_cache = self.rgb_runtime_cache.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         
         tokio::task::spawn_blocking(move || {
-            Self::accept_consignment_blocking(&storage, &rgb_cache, &rgb_mgr, &wallet_name, consignment_bytes)
+            Self::accept_consignment_blocking(&storage, &rgb_mgr, &wallet_name, consignment_bytes)
         })
         .await
         .map_err(|e| WalletError::Internal(format!("Accept consignment task panicked: {}", e)))?
     }
 
-    /// Export genesis consignment (Phase 2: Using cached runtime)
+    /// Export genesis consignment (using ephemeral runtime like RGB CLI)
     pub async fn export_genesis_consignment(
         &self,
         wallet_name: &str,
         contract_id_str: &str,
     ) -> Result<ExportGenesisResponse, WalletError> {
         let storage = self.storage.clone();
-        let rgb_cache = self.rgb_runtime_cache.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         let contract_id_str = contract_id_str.to_string();
         
         tokio::task::spawn_blocking(move || {
-            Self::export_genesis_blocking(&storage, &rgb_cache, &rgb_mgr, &wallet_name, &contract_id_str)
+            Self::export_genesis_blocking(&storage, &rgb_mgr, &wallet_name, &contract_id_str)
         })
         .await
         .map_err(|e| WalletError::Internal(format!("Export genesis task panicked: {}", e)))?
@@ -351,29 +305,27 @@ impl WalletManager {
     // RGB Sync Operations - Async Wrappers
     // ============================================================================
 
-    /// Sync RGB runtime (Phase 2: Using cached runtime)
+    /// Sync RGB runtime (using ephemeral runtime like RGB CLI)
     pub async fn sync_rgb_runtime(&self, wallet_name: &str) -> Result<(), WalletError> {
         let storage = self.storage.clone();
-        let rgb_cache = self.rgb_runtime_cache.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         
         tokio::task::spawn_blocking(move || {
-            Self::sync_rgb_runtime_blocking(&storage, &rgb_cache, &rgb_mgr, &wallet_name)
+            Self::sync_rgb_runtime_blocking(&storage, &rgb_mgr, &wallet_name)
         })
                 .await
         .map_err(|e| WalletError::Internal(format!("Sync RGB task panicked: {}", e)))?
     }
 
-    /// Sync RGB after state change (Phase 2: Using cached runtime)
+    /// Sync RGB after state change (using ephemeral runtime like RGB CLI)
     pub async fn sync_rgb_after_state_change(&self, wallet_name: &str) -> Result<(), WalletError> {
         let storage = self.storage.clone();
-        let rgb_cache = self.rgb_runtime_cache.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         
         tokio::task::spawn_blocking(move || {
-            Self::sync_rgb_after_state_change_blocking(&storage, &rgb_cache, &rgb_mgr, &wallet_name)
+            Self::sync_rgb_after_state_change_blocking(&storage, &rgb_mgr, &wallet_name)
         })
                 .await
         .map_err(|e| WalletError::Internal(format!("Sync RGB after state change task panicked: {}", e)))?
@@ -385,8 +337,7 @@ impl WalletManager {
 
     fn issue_asset_blocking(
         storage: &Storage,
-        rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
-        _rgb_runtime_manager: &RgbRuntimeManager,
+        rgb_runtime_manager: &RgbRuntimeManager,
         wallet_name: &str,
         request: IssueAssetRequest,
     ) -> Result<IssueAssetResponse, WalletError> {
@@ -394,24 +345,18 @@ impl WalletManager {
             return Err(WalletError::WalletNotFound(wallet_name.to_string()));
         }
         
-        let rgb_data_dir = storage.base_dir().join(wallet_name).join("rgb_data");
-        let rgb_manager = RgbManager::new(rgb_data_dir)?;
+        use super::shared::rgb::{RgbAssignment, RgbCreateParams, RgbIssuer};
+        use strict_types::TypeName;
+        use chrono::Utc;
         
-        log::debug!("Issuing asset to local stockpile...");
-        let result = rgb_manager.issue_rgb20_asset(request)?;
-        log::info!("Asset created successfully: {}", result.contract_id);
+        log::info!("Issuing RGB asset through ephemeral runtime (matches RGB CLI)");
         
-        // 🔧 CRITICAL: Register genesis seal in wallet descriptor (Phase 2: Using cached runtime)
-        // Without this, the wallet knows about the tokens (in stockpile)
-        // but can't find them when trying to spend (not in descriptor)
-        log::debug!("Registering genesis seal in wallet descriptor: {}", result.genesis_seal);
-        
-        // Parse genesis outpoint from "txid:vout" string
-        let genesis_parts: Vec<&str> = result.genesis_seal.split(':').collect();
+        // Parse genesis outpoint first
+        let genesis_parts: Vec<&str> = request.genesis_utxo.split(':').collect();
         if genesis_parts.len() != 2 {
             return Err(WalletError::InvalidInput(format!(
                 "Invalid genesis seal format: {}",
-                result.genesis_seal
+                request.genesis_utxo
             )));
         }
         
@@ -422,76 +367,104 @@ impl WalletManager {
             WalletError::InvalidInput(format!("Invalid genesis vout: {}", e))
         })?;
         let genesis_outpoint = bpstd::Outpoint::new(genesis_txid, bpstd::Vout::from_u32(genesis_vout));
-        log::debug!("Parsed genesis outpoint: {}:{}", genesis_txid, genesis_vout);
         
-        // Get cached runtime and register genesis seal
-        log::debug!("Acquiring cached RGB runtime for genesis seal registration");
-        let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
+    // Create ephemeral runtime (loads from disk, like RGB CLI)
+    log::debug!("Creating ephemeral RGB runtime for issuance");
+    let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
         
-        guard.execute(|runtime| {
-            // Create noise engine from descriptor's noise seed
-            let noise_seed = runtime.wallet.descriptor().noise();
-            let mut noise_engine = Sha256::new();
-            noise_engine.input_raw(noise_seed.as_ref());
+        // ℹ️  NOTE: We do NOT call runtime.update() before issuance (RGB CLI doesn't either)
+        // The genesis UTXO will be discovered later during payment via update()
+        
+        {
+            // 1. Load and import RGB20 issuer if needed
+            let rgb_data_dir = storage.base_dir().join(wallet_name).join("rgb_data");
+            let issuer_path = rgb_data_dir.join("RGB20-FNA.issuer");
             
-            // Get next nonce for seal blinding
-            let nonce = runtime.wallet.next_nonce();
-            log::debug!("Using nonce {} for genesis seal", nonce);
-            
-            // Create the genesis seal
-            let genesis_seal = bpstd::seals::WTxoSeal::no_fallback(
-                genesis_outpoint,
-                noise_engine,
-                nonce
-            );
-            log::debug!("Created genesis seal with auth token: {}", genesis_seal.auth_token());
-            
-            // Register it in the descriptor
-            runtime.wallet.register_seal(genesis_seal);
-            
-            // Verify registration
-            let seal_count = runtime.wallet.descriptor().seals().count();
-            log::info!("Genesis seal registered in descriptor ({} seal(s) tracked)", seal_count);
-            
-            if seal_count == 0 {
-                log::error!("Genesis seal registration failed - descriptor still has 0 seals");
-                return Err(WalletError::Rgb(
-                    "Failed to register genesis seal in descriptor".to_string()
-                ));
+            // Ensure the issuer file exists (create if missing)
+            if !issuer_path.exists() {
+                log::debug!("Creating RGB20 issuer file at: {}", issuer_path.display());
+                std::fs::write(&issuer_path, super::shared::rgb::RGB20_ISSUER_BYTES).map_err(|e| {
+                    WalletError::Rgb(format!("Failed to create RGB20 issuer file: {}", e))
+                })?;
             }
             
-            // Sync runtime to update witness status for genesis seal
-            log::debug!("Syncing RGB runtime after genesis seal registration");
-            runtime.update(1).map_err(|e| {
-                log::error!("Failed to sync RGB runtime: {:?}", e);
-                WalletError::Rgb(format!("Failed to sync RGB state: {:?}", e))
-            })?;
-            log::info!("Genesis seal registered and synced in cached runtime");
+            let issuer = super::shared::rgb::RGB20_ISSUER.get_or_init(|| {
+                RgbIssuer::load(&issuer_path, |_, _, _| -> Result<_, std::convert::Infallible> { Ok(()) })
+                    .expect("Failed to load RGB20 issuer")
+            });
             
-            Ok(())
-        })?;
-        
-        // CRITICAL: Evict cached runtime so next operation loads fresh contract from stockpile
-        // The contract was added to stockpile by RgbManager, but cached runtime doesn't auto-reload
-        log::debug!("Evicting cached runtime to force reload of newly issued contract");
-        rgb_runtime_cache.evict(wallet_name)?;
-        log::debug!("Cached runtime evicted - next operation will load fresh state");
-        
-        log::info!("Asset issuance complete");
-        Ok(result)
+            let codex_id = issuer.codex_id();
+            log::debug!("RGB20 issuer codex ID: {}", codex_id);
+            
+            // Import issuer if not already in contracts
+            if !runtime.contracts.has_issuer(codex_id) {
+                log::debug!("Importing RGB20 issuer into runtime contracts");
+                runtime.contracts.import_issuer(issuer.clone()).map_err(|e| {
+                    WalletError::Rgb(format!("Failed to import RGB20 issuer: {:?}", e))
+                })?;
+            }
+            
+            // 2. Create contract params
+            log::debug!("Creating contract params for: {} ({})", request.name, request.ticker);
+            let type_name = TypeName::try_from(request.name.clone()).map_err(|e| {
+                WalletError::InvalidInput(format!("Invalid asset name: {:?}", e))
+            })?;
+            
+            let mut params = RgbCreateParams::new_bitcoin_testnet(codex_id, type_name);
+            
+            // 3. Add global state
+            params = params
+                .with_global_verified("ticker", request.ticker.as_str())
+                .with_global_verified("name", request.name.as_str())
+                .with_global_verified("precision", super::shared::rgb::map_precision(request.precision))
+                .with_global_verified("issued", request.supply);
+            
+            // 4. Add owned state (initial allocation at genesis UTXO)
+            params.push_owned_unlocked(
+                "balance",
+                RgbAssignment::new_internal(genesis_outpoint, request.supply),
+            );
+            
+            params.timestamp = Some(Utc::now());
+            
+            // 5. Issue through runtime - this keeps contracts in sync!
+            log::debug!("Issuing contract through runtime.issue() - contracts stay in sync");
+            let contract_id = runtime.issue(params).map_err(|e| {
+                WalletError::Rgb(format!("Failed to issue contract: {:?}", e))
+            })?;
+            
+            log::info!("✓ Contract issued through runtime: {}", contract_id);
+            
+            // ℹ️  NOTE: Unlike our previous approach, we do NOT manually add the genesis UTXO here.
+            // RGB CLI just calls runtime.issue() and lets the runtime drop.
+            // The genesis outpoint is recorded internally by RGB as part of the contract state.
+            // When a payment is later created, runtime.update() is called first, which:
+            // 1. Scans the blockchain for UTXOs at derived addresses
+            // 2. Uses the recorded genesis outpoint to locate the genesis UTXO
+            // 3. Populates the UTXO set so pay_invoice() can spend it
+            //
+            // Manually adding it here was interfering with RGB's internal UTXO tracking.
+            
+            log::info!("✓ Asset issuance complete - contract state saved");
+            
+            Ok(IssueAssetResponse {
+                contract_id: contract_id.to_string(),
+                genesis_seal: request.genesis_utxo.clone(),
+            })
+        }
+        // Runtime drops here → FileHolder::drop() auto-saves to disk (with genesis UTXO!)
     }
 
     fn generate_rgb_invoice_blocking(
         storage: &Storage,
-        rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
-        _rgb_runtime_manager: &RgbRuntimeManager,
+        rgb_runtime_manager: &RgbRuntimeManager,
         wallet_name: &str,
         request: GenerateInvoiceRequest,
         utxo_info: Option<crate::api::types::UtxoInfo>,
     ) -> Result<GenerateInvoiceResult, WalletError> {
         super::rgb_transfer_ops::generate_rgb_invoice_sync(
             storage,
-            rgb_runtime_cache,
+            rgb_runtime_manager,
             wallet_name,
             request,
             utxo_info,
@@ -500,52 +473,49 @@ impl WalletManager {
 
     fn send_transfer_blocking(
         storage: &Storage,
-        rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
-        _rgb_runtime_manager: &RgbRuntimeManager,
+        rgb_runtime_manager: &RgbRuntimeManager,
         wallet_name: &str,
         invoice_str: &str,
         fee_rate_sat_vb: Option<u64>,
     ) -> Result<SendTransferResponse, WalletError> {
         super::rgb_transfer_ops::send_transfer(
             storage,
-            rgb_runtime_cache,
+            rgb_runtime_manager,
             wallet_name,
             invoice_str,
             fee_rate_sat_vb,
             |wn, conf, msg| {
-                super::sync_ops::sync_rgb_internal(storage, rgb_runtime_cache, wn, conf, msg)
+                super::sync_ops::sync_rgb_internal(storage, rgb_runtime_manager, wn, conf, msg)
             },
         )
     }
 
     fn accept_consignment_blocking(
         storage: &Storage,
-        rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
-        _rgb_runtime_manager: &RgbRuntimeManager,
+        rgb_runtime_manager: &RgbRuntimeManager,
         wallet_name: &str,
         consignment_bytes: Vec<u8>,
     ) -> Result<AcceptConsignmentResponse, WalletError> {
         super::rgb_consignment_ops::accept_consignment(
             storage,
-            rgb_runtime_cache,
+            rgb_runtime_manager,
             wallet_name,
             consignment_bytes,
             |wn| {
-                super::sync_ops::sync_rgb_after_state_change(storage, rgb_runtime_cache, wn)
+                super::sync_ops::sync_rgb_after_state_change(storage, rgb_runtime_manager, wn)
             },
         )
     }
 
     fn export_genesis_blocking(
         storage: &Storage,
-        rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
-        _rgb_runtime_manager: &RgbRuntimeManager,
+        rgb_runtime_manager: &RgbRuntimeManager,
         wallet_name: &str,
         contract_id_str: &str,
     ) -> Result<ExportGenesisResponse, WalletError> {
         super::rgb_consignment_ops::export_genesis_consignment(
             storage,
-            rgb_runtime_cache,
+            rgb_runtime_manager,
             wallet_name,
             contract_id_str,
         )
@@ -553,48 +523,17 @@ impl WalletManager {
 
     fn sync_rgb_runtime_blocking(
         storage: &Storage,
-        rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
-        _rgb_runtime_manager: &RgbRuntimeManager,
+        rgb_runtime_manager: &RgbRuntimeManager,
         wallet_name: &str,
     ) -> Result<(), WalletError> {
-        super::sync_ops::sync_rgb_runtime(storage, rgb_runtime_cache, wallet_name)
+        super::sync_ops::sync_rgb_runtime(storage, rgb_runtime_manager, wallet_name)
     }
 
     fn sync_rgb_after_state_change_blocking(
         storage: &Storage,
-        rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
-        _rgb_runtime_manager: &RgbRuntimeManager,
+        rgb_runtime_manager: &RgbRuntimeManager,
         wallet_name: &str,
     ) -> Result<(), WalletError> {
-        super::sync_ops::sync_rgb_after_state_change(storage, rgb_runtime_cache, wallet_name)
-    }
-
-    // ============================================================================
-    // Lifecycle Management (Phase 1)
-    // ============================================================================
-
-    /// Start the RGB runtime lifecycle manager background tasks
-    /// 
-    /// This should be called once at server startup to begin:
-    /// - Auto-save loop: Periodically saves dirty runtimes
-    /// - Idle cleanup loop: Evicts idle runtimes to prevent memory leaks
-    pub fn start_lifecycle_manager(self: &Arc<Self>) {
-        let manager = self.rgb_lifecycle_manager.clone();
-        tokio::spawn(async move {
-            manager.start().await;
-        });
-        log::info!("RGB runtime lifecycle manager started");
-    }
-
-    /// Shutdown the lifecycle manager and save all RGB state
-    /// 
-    /// This should be called during server shutdown to ensure:
-    /// - Background tasks are stopped
-    /// - All dirty runtimes are saved to disk
-    pub async fn shutdown(&self) -> Result<(), WalletError> {
-        log::info!("Initiating WalletManager shutdown...");
-        self.rgb_lifecycle_manager.shutdown().await?;
-        log::info!("WalletManager shutdown complete");
-        Ok(())
+        super::sync_ops::sync_rgb_after_state_change(storage, rgb_runtime_manager, wallet_name)
     }
 }

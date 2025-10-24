@@ -26,3 +26,10 @@
 	path = f1r3node
 	url = git@github.com:F1R3FLY-io/f1r3node.git
 	branch = rust/dev
+[submodule "electrs"]
+	path = electrs
+	url = git@github.com:Blockstream/electrs.git
+	branch = new-index
+[submodule "esplora"]
+	path = esplora
+	url = git@github.com:Blockstream/esplora.git

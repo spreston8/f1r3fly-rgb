@@ -23,10 +23,10 @@ use ::rgb::{ContractId, WitnessStatus};
 /// After import, users should sync their wallet to see updated token balances.
 pub fn accept_consignment(
     storage: &Storage,
-    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
+    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
     consignment_bytes: Vec<u8>,
-    sync_fn: impl Fn(&str) -> Result<(), WalletError>,
+    _sync_fn: impl Fn(&str) -> Result<(), WalletError>,
 ) -> Result<AcceptConsignmentResponse, WalletError> {
     use std::io::Write;
 
@@ -51,11 +51,11 @@ pub fn accept_consignment(
     drop(file);
     log::debug!("Temp consignment file created: {:?}", temp_path);
 
-    // 2. Get cached runtime for consignment import (Phase 2)
-    log::debug!("Acquiring cached RGB runtime for consignment import");
-    let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
+    // 2. Create ephemeral runtime for consignment import
+    log::debug!("Creating ephemeral RGB runtime for consignment import");
+    let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
 
-    let (contract_id_str, import_type, bitcoin_txid, status) = guard.execute(|runtime| {
+    let (contract_id_str, import_type, bitcoin_txid, status) = {
         // 3. Get contract IDs before importing
         let contract_ids_before: std::collections::HashSet<String> = runtime
             .contracts
@@ -149,23 +149,23 @@ pub fn accept_consignment(
         }
         };
 
-        Ok((contract_id_str, import_type, bitcoin_txid, status))
-    })?;
+        (contract_id_str, import_type, bitcoin_txid, status)
+    };
 
     // 7. Cleanup temp file
     let _ = std::fs::remove_file(&temp_path);
 
-    // 8. If this was a transfer (not genesis), sync to see the new tokens
-    if import_type == "transfer" {
-        sync_fn(wallet_name)?;
-    }
-
+    // ℹ️  NOTE: We do NOT call update() after accept (RGB CLI doesn't either)
+    // The consignment has been imported and saved to disk via FileHolder::drop()
+    // The next operation that needs fresh state (like balance query) will call update()
+    
     Ok(AcceptConsignmentResponse {
         contract_id: contract_id_str,
         status,
         import_type,
         bitcoin_txid,
     })
+    // Runtime drops here → FileHolder::drop() auto-saves to disk
 }
 
 /// Export a genesis consignment to share contract knowledge.
@@ -183,7 +183,7 @@ pub fn accept_consignment(
 /// To actually transfer token ownership, use `send_transfer()` instead.
 pub fn export_genesis_consignment(
     storage: &Storage,
-    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
+    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
     contract_id_str: &str,
 ) -> Result<ExportGenesisResponse, WalletError> {
@@ -199,7 +199,7 @@ pub fn export_genesis_consignment(
 
     log::debug!("Parsed contract ID: {}", contract_id);
 
-    // 2. Create consignment directory first (Phase 2)
+    // 2. Create consignment directory first
     let consignment_filename = format!("genesis_{}.rgbc", contract_id);
     let exports_dir = storage.base_dir().join("exports");
 
@@ -217,11 +217,11 @@ pub fn export_genesis_consignment(
         log::debug!("Removed existing export file");
     }
 
-    // 3. Get cached runtime and export (Phase 2)
-    log::debug!("Acquiring cached RGB runtime for genesis export");
-    let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
+    // 3. Create ephemeral runtime and export
+    log::debug!("Creating ephemeral RGB runtime for genesis export");
+    let runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
 
-    guard.execute(|runtime| {
+    {
         // Verify we have this contract
         if !runtime.contracts.has_contract(contract_id) {
             log::error!("Contract {} not found in wallet", contract_id);
@@ -261,9 +261,7 @@ pub fn export_genesis_consignment(
                 WalletError::Rgb(format!("Failed to export genesis consignment: {:?}", e))
             })?;
         log::info!("Genesis consignment exported successfully");
-
-        Ok(())
-    })?;
+    }
 
     // 4. Get file size
     let file_size = std::fs::metadata(&consignment_path)
@@ -276,4 +274,5 @@ pub fn export_genesis_consignment(
         file_size_bytes: file_size,
         download_url: format!("/api/genesis/{}", consignment_filename),
     })
+    // Runtime drops here → FileHolder::drop() auto-saves to disk
 }

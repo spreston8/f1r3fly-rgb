@@ -13,6 +13,11 @@ use crate::error::WalletError;
 use bitcoin::Network;
 use std::str::FromStr;
 
+/// Get Bitcoin network from config
+fn get_network() -> Network {
+    crate::config::WalletConfig::from_env().bitcoin_network
+}
+
 // Import RGB types from the actual RGB crates (not from shared::rgb module)
 use ::rgb::ContractId;
 use ::rgb_invoice::{RgbInvoice, RgbBeneficiary};
@@ -31,8 +36,9 @@ pub async fn find_utxo_for_selection(
     // Get wallet balance which includes all UTXOs with their address indices
     let descriptor = storage.load_descriptor(wallet_name)?;
     const GAP_LIMIT: u32 = 20;
+    let network = get_network();
     let addresses_with_indices =
-        AddressManager::derive_addresses(&descriptor, 0, GAP_LIMIT, Network::Signet)?;
+        AddressManager::derive_addresses(&descriptor, 0, GAP_LIMIT, network)?;
 
     let balance = balance_checker
         .calculate_balance(&addresses_with_indices)
@@ -63,7 +69,7 @@ pub async fn find_utxo_for_selection(
 /// Otherwise, creates an AuthToken-based invoice using the public address.
 pub fn generate_rgb_invoice_sync(
     storage: &Storage,
-    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
+    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
     request: GenerateInvoiceRequest,
     utxo_info: Option<UtxoInfo>,
@@ -77,18 +83,18 @@ pub fn generate_rgb_invoice_sync(
     let contract_id = ContractId::from_str(&request.contract_id)
         .map_err(|e| WalletError::InvalidInput(format!("Invalid contract ID: {}", e)))?;
 
-    log::debug!("Acquiring cached RGB runtime for invoice generation");
-    // Get cached RGB runtime (Phase 2)
-    let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
-    log::debug!("RGB runtime acquired");
+    log::debug!("Creating ephemeral RGB runtime for invoice generation");
+    // Create ephemeral RGB runtime (matches RGB CLI)
+    let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
+    log::debug!("RGB runtime created");
 
     // Use native RGB invoice API
     use hypersonic::Consensus;
     use rgb_invoice::RgbBeneficiary;
     use strict_types::StrictVal;
 
-    // Create beneficiary using cached runtime (Phase 2)
-    let (beneficiary, seal_info, selected_utxo) = guard.execute(|runtime| {
+    // Create beneficiary using ephemeral runtime
+    let (beneficiary, seal_info, selected_utxo) = {
         // Create beneficiary: WitnessOut (specific UTXO) or AuthToken (automatic)
         if let Some(utxo) = utxo_info.clone() {
         log::info!("Creating WitnessOut-based invoice for specific UTXO: {}:{}", utxo.txid, utxo.vout);
@@ -117,7 +123,7 @@ pub fn generate_rgb_invoice_sync(
         let seal_display = witness_out.to_string();
         log::debug!("WitnessOut created: {}", seal_display);
         
-        Ok((RgbBeneficiary::WitnessOut(witness_out), seal_display, Some(utxo)))
+        (RgbBeneficiary::WitnessOut(witness_out), seal_display, Some(utxo))
     } else {
         log::info!("Creating AuthToken-based invoice (automatic UTXO selection)");
         
@@ -162,9 +168,9 @@ pub fn generate_rgb_invoice_sync(
         
         // Return None for auto mode since we don't know which UTXO was selected
         // (RGB's auth_token() doesn't expose the underlying UTXO selection)
-        Ok((RgbBeneficiary::Token(auth), seal_display, None))
+        (RgbBeneficiary::Token(auth), seal_display, None)
         }
-    })?;
+    };
 
     // Create amount as StrictVal if provided
     let amount_val = request.amount.map(StrictVal::num);
@@ -190,21 +196,22 @@ pub fn generate_rgb_invoice_sync(
         seal_utxo: seal_info,
         selected_utxo,
     })
+    // Runtime drops here → FileHolder::drop() auto-saves to disk
 }
 
-/// Send RGB asset transfer (Phase 2: Using long-lived runtime cache)
+/// Send RGB asset transfer (using ephemeral runtime like RGB CLI)
 pub fn send_transfer(
     storage: &Storage,
-    rgb_runtime_cache: &std::sync::Arc<super::shared::RgbRuntimeCache>,
+    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
     invoice_str: &str,
     fee_rate_sat_vb: Option<u64>,
-    sync_fn: impl Fn(&str, u32, &str) -> Result<(), WalletError>,
+    _sync_fn: impl Fn(&str, u32, &str) -> Result<(), WalletError>,
 ) -> Result<SendTransferResponse, WalletError> {
-    log::info!("Initiating RGB transfer for wallet: {} (using cached runtime)", wallet_name);
+    log::info!("Initiating RGB transfer for wallet: {} (using ephemeral runtime)", wallet_name);
     log::debug!("Invoice: {}", invoice_str);
 
-    use bpstd::psbt::{PsbtConstructor, TxParams};
+    use bpstd::psbt::TxParams;
     use bpstd::Sats;
     use rgbp::CoinselectStrategy;
 
@@ -216,13 +223,9 @@ pub fn send_transfer(
     })?;
     log::debug!("Invoice parsed successfully");
 
-    // Sync RGB state to ensure we have fresh token balances
-    // This prevents "StateInsufficient" errors from stale cache
-    sync_fn(wallet_name, 1, "Syncing RGB state for transfer")?;
-
-    // Get cached runtime for this wallet
-    log::debug!("Acquiring cached RGB runtime");
-    let guard = rgb_runtime_cache.get_or_create(wallet_name)?;
+    // Create ephemeral runtime (loads from disk, like RGB CLI)
+    log::debug!("Creating ephemeral RGB runtime for transfer");
+    let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
 
     // Set fee rate (default 1 sat/vB if not provided)
     let fee_sats = fee_rate_sat_vb.unwrap_or(1) * 250; // Rough estimate for typical RGB tx size
@@ -267,13 +270,22 @@ pub fn send_transfer(
     let consignment_filename = format!("transfer_{}_{}.rgbc", contract_id, timestamp);
     let consignment_path = consignment_dir.join(&consignment_filename);
 
-    // Execute RGB operations within cached runtime
-    // Phase 2: Long-lived runtime automatically maintains seals across operations
-    // No manual seal registration needed - the runtime's in-memory pile preserves seal state
-    log::debug!("Executing RGB transfer operations on cached runtime");
-    let (psbt, consignment_filename_result, descriptor) = guard.execute(|runtime| {
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // STEP 1: Create Payment (matches RGB CLI's `pay` command)
+    // ═══════════════════════════════════════════════════════════════════════════════
+    log::debug!("Step 1: Creating payment with ephemeral runtime");
+    let (psbt, _psbt_meta, txid_str) = {
+        // Sync RGB state before creating payment
+        // This updates both wallet UTXOs and witness confirmations
+        log::debug!("Syncing RGB state before payment (UTXOs + witnesses)");
+        runtime.update(1).map_err(|e| {
+            log::error!("Failed to sync RGB state: {:?}", e);
+            WalletError::Rgb(format!("Failed to sync RGB state: {:?}", e))
+        })?;
+        log::debug!("✓ Wallet synchronized - ready for payment");
+        
         // Pay invoice - this returns PSBT and Payment
-        // Note: pay_invoice internally handles DBC commit and seal creation
+        // RGB internally handles DBC commit and includes bundle in contract
         log::debug!("Creating payment from invoice");
         let (psbt, payment) = runtime
             .pay_invoice(&invoice, strategy, tx_params, giveaway)
@@ -282,6 +294,10 @@ pub fn send_transfer(
                 WalletError::Rgb(format!("Failed to create payment: {:?}", e))
             })?;
         log::debug!("Payment created successfully");
+        log::debug!("Payment terminals count: {}", payment.terminals.len());
+
+        // Extract psbt_meta for later use with finalize()
+        let psbt_meta = payment.psbt_meta.clone();
 
         // Generate consignment BEFORE signing
         log::debug!("Creating consignment file");
@@ -294,21 +310,14 @@ pub fn send_transfer(
             })?;
         log::info!("Consignment created: {}", consignment_filename);
 
-        // Sync witness state - tracks all seals (including new change seals) for confirmations
-        // The long-lived runtime maintains seal state in memory, so update() just refreshes witness status
-        log::debug!("Syncing RGB witness state");
-        runtime.update(1).map_err(|e| {
-            log::error!("Failed to sync RGB witness state: {:?}", e);
-            WalletError::Rgb(format!("Failed to sync RGB state: {:?}", e))
-        })?;
-        log::info!("RGB witness state synced");
+        // Extract txid for response
+        let tx = psbt.to_unsigned_tx();
+        let txid_str = format!("{}", tx.txid());
 
-        // Return psbt, consignment filename, and descriptor for finalization outside the guard
-        // (finalization happens after signing, which is done outside the guard)
-        let descriptor = runtime.wallet.descriptor().clone();
-        Ok((psbt, consignment_filename.clone(), descriptor))
-    })?;
-    let consignment_filename = consignment_filename_result;
+        (psbt, psbt_meta, txid_str)
+    }; // Runtime #1 drops here → Saves payment bundle to stockpile
+    log::info!("✓ Payment runtime dropped - bundle saved to stockpile");
+    
     let mut psbt = psbt;
 
     // Debug: Inspect PSBT before signing
@@ -355,8 +364,10 @@ pub fn send_transfer(
         }
     }
 
-    // Sign the PSBT using our wallet signer
-    log::debug!("Signing PSBT with {} input(s)", psbt.inputs().count());
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // STEP 2: Sign PSBT (WITHOUT runtime - just cryptographic signing)
+    // ═══════════════════════════════════════════════════════════════════════════════
+    log::debug!("Step 2: Signing PSBT with {} input(s)", psbt.inputs().count());
     let signer = create_signer(storage, wallet_name)?;
     let signed_count = psbt.sign(&signer).map_err(|e| {
         log::error!("PSBT signing failed: {:?}", e);
@@ -369,54 +380,79 @@ pub fn send_transfer(
         return Err(WalletError::Rgb("Failed to sign any inputs".into()));
     }
 
-    // Finalize the PSBT with wallet descriptor (from cached runtime)
-    log::debug!("Finalizing PSBT");
-    let finalized_count = psbt.finalize(&descriptor);
-    log::debug!("Finalized {} input(s)", finalized_count);
-
-    if finalized_count == 0 {
-        log::error!("No PSBT inputs were finalized");
-        return Err(WalletError::Rgb("Failed to finalize any inputs".into()));
-    }
-
-    // Extract the signed transaction
-    log::debug!("Extracting transaction from PSBT");
-    let bpstd_tx = psbt.extract().map_err(|e| {
-        log::error!("{} non-finalized inputs remain", e.0);
-        WalletError::Rgb(format!(
-            "Failed to extract transaction: {} non-finalized inputs remain",
-            e.0
-        ))
-    })?;
-
-    // Convert bpstd::Tx to hex string using :x format specifier
-    // bpstd::Tx implements Display with :x formatting
-    let tx_hex = format!("{:x}", bpstd_tx);
-
-    // Get txid from bpstd::Tx
-    let txid = bpstd_tx.txid().to_string();
-    log::info!("Transaction extracted - txid: {}", txid);
-
-    // Broadcast transaction
-    log::info!("Broadcasting transaction to network");
-    let broadcast_txid = broadcast_tx_hex(&tx_hex)?;
-    log::info!("Transaction broadcast successful: {}", broadcast_txid);
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // STEP 3: Finalize & Broadcast (matches RGB CLI's `finalize` command)
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // NOTE: RGB CLI's finalize command does NOT use runtime.finalize()!
+    // It's commented out in rgb/cli/src/exec.rs:552
+    // Instead, it just:
+    // 1. Finalizes PSBT with descriptor
+    // 2. Extracts transaction
+    // 3. Broadcasts via resolver
+    // 4. Relies on runtime.update() to discover change UTXO later
     
-    // Verify broadcast txid matches extracted txid
-    if broadcast_txid != txid {
-        log::warn!(
-            "Broadcast txid ({}) differs from extracted txid ({})",
-            broadcast_txid, txid
-        );
+    log::debug!("Step 3: Finalizing PSBT and broadcasting (RGB CLI pattern)");
+    
+    // Load descriptor for finalization
+    let descriptor_str = storage.load_descriptor(wallet_name)?;
+    use rgb_descriptors::RgbDescr;
+    use bpstd::{XpubDerivable, Wpkh};
+    use std::str::FromStr;
+    let xpub = XpubDerivable::from_str(&descriptor_str)
+        .map_err(|e| WalletError::InvalidDescriptor(e.to_string()))?;
+    let noise = xpub.xpub().chain_code().to_byte_array();
+    let rgb_descr = RgbDescr::<XpubDerivable>::new_unfunded(Wpkh::from(xpub), noise);
+    
+    // Finalize PSBT (convert partial_sigs to final_witness)
+    log::debug!("Finalizing PSBT with descriptor");
+    let finalized_count = psbt.finalize(&rgb_descr);
+    log::info!("Finalized {} input(s)", finalized_count);
+    
+    if !psbt.is_finalized() {
+        return Err(WalletError::Rgb("PSBT not fully finalized".into()));
     }
-
-    // Phase 2: Cached runtime automatically saves state when marked dirty
-    // The guard.execute() call already synced witness state via runtime.update(1)
-    // Seals remain in the long-lived runtime's pile for future operations
+    
+    // Extract signed transaction
+    log::debug!("Extracting transaction from finalized PSBT");
+    let tx = psbt.extract().map_err(|e| {
+        WalletError::Rgb(format!("Failed to extract transaction: {} unfinalized inputs", e.0))
+    })?;
+    
+    // Broadcast via Esplora (NOT via runtime.finalize() - that's deprecated)
+    log::info!("Broadcasting transaction: {}", txid_str);
+    let tx_hex = format!("{:x}", tx);
+    
+    use crate::config::WalletConfig;
+    let config = WalletConfig::from_env();
+    let base_url = config.esplora_url;
+    
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| WalletError::Network(format!("Failed to create HTTP client: {}", e)))?;
+    
+    let response = client
+        .post(format!("{}/tx", base_url))
+        .header("Content-Type", "text/plain")
+        .body(tx_hex)
+        .send()
+        .map_err(|e| WalletError::Network(format!("Broadcast failed: {}", e)))?;
+    
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(WalletError::Network(format!(
+            "Broadcast failed with status {}: {}",
+            status, error_text
+        )));
+    }
+    
+    log::info!("✓ Transaction broadcast successful: {}", txid_str);
+    log::debug!("Change UTXO will be discovered via runtime.update() on next balance query");
     
     // Return response
     Ok(SendTransferResponse {
-        bitcoin_txid: txid,
+        bitcoin_txid: txid_str,
         consignment_download_url: format!("/api/consignment/{}", consignment_filename),
         consignment_filename,
         status: "broadcasted".to_string(),
@@ -442,7 +478,8 @@ fn populate_psbt_bip32_derivations(
     let mnemonic = storage.load_mnemonic(wallet_name)?;
     let seed = mnemonic.to_seed("");
     let secp = Secp256k1::new();
-    let master_key = Xpriv::new_master(Network::Signet, &seed)
+    let network = get_network();
+    let master_key = Xpriv::new_master(network, &seed)
         .map_err(|e| WalletError::Bitcoin(e.to_string()))?;
 
     let fingerprint = master_key.fingerprint(&secp);
@@ -498,7 +535,7 @@ fn populate_psbt_bip32_derivations(
                 // Convert to P2WPKH script
                 let compressed = bitcoin::key::CompressedPublicKey::try_from(pubkey)
                     .map_err(|e| WalletError::Bitcoin(e.to_string()))?;
-                let address = bitcoin::Address::p2wpkh(&compressed, Network::Signet);
+                let address = bitcoin::Address::p2wpkh(&compressed, network);
                 let derived_script = address.script_pubkey();
 
                 // Check if this matches the input's scriptPubKey
@@ -552,13 +589,29 @@ fn populate_psbt_bip32_derivations(
 /// Create a wallet signer for PSBT signing
 fn create_signer(storage: &Storage, wallet_name: &str) -> Result<WalletSigner, WalletError> {
     let mnemonic = storage.load_mnemonic(wallet_name)?;
-    Ok(WalletSigner::new(mnemonic, Network::Signet))
+    let network = get_network();
+    Ok(WalletSigner::new(mnemonic, network))
 }
 
-/// Broadcast transaction hex to mempool.space
+/// [DEPRECATED] We now use RGB's runtime.finalize() which broadcasts internally
+/// Broadcast transaction hex to Esplora API
 /// Simple blocking HTTP call - will be run on blocking thread pool via spawn_blocking
+#[allow(dead_code)]
 fn broadcast_tx_hex(tx_hex: &str) -> Result<String, WalletError> {
-    log::debug!("Broadcasting transaction to mempool.space");
+    // Use configured Esplora URL for Regtest, otherwise use mempool.space
+    let network = get_network();
+    let base_url = if matches!(network, Network::Regtest) {
+        let config = crate::config::WalletConfig::from_env();
+        config.esplora_url
+    } else {
+        match network {
+            Network::Signet => "https://mempool.space/signet/api".to_string(),
+            Network::Testnet => "https://mempool.space/testnet/api".to_string(),
+            _ => "https://mempool.space/api".to_string(),
+        }
+    };
+    
+    log::debug!("Broadcasting transaction to: {}/tx", base_url);
     
     // Simple blocking HTTP client with timeout
     let client = reqwest::blocking::Client::builder()
@@ -567,7 +620,7 @@ fn broadcast_tx_hex(tx_hex: &str) -> Result<String, WalletError> {
         .map_err(|e| WalletError::Network(format!("Failed to create HTTP client: {}", e)))?;
     
     let response = client
-        .post("https://mempool.space/signet/api/tx")
+        .post(format!("{}/tx", base_url))
         .header("Content-Type", "text/plain")
         .body(tx_hex.to_string())
         .send()

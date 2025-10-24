@@ -331,8 +331,9 @@ fn derive_private_key_for_index(
         Network::Bitcoin => 0,
         _ => 1,
     };
+    // BIP84 path: m/84'/coin_type'/0'/0/index
     let path =
-        bitcoin::bip32::DerivationPath::from_str(&format!("m/84'/{}'/'0'/0/{}", coin_type, address_index))
+        bitcoin::bip32::DerivationPath::from_str(&format!("m/84'/{}'/0'/0/{}", coin_type, address_index))
             .map_err(|e| WalletError::Bitcoin(e.to_string()))?;
 
     let derived_key = master_key

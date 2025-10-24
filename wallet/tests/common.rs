@@ -103,8 +103,13 @@ impl TestNetworkConfig {
     }
 }
 
-/// Mine a block in Regtest mode (calls Esplora mock /regtest/mine endpoint)
+/// Mine a block in Regtest mode
+/// 
+/// Tries two methods in order:
+/// 1. Call esplora-mock's /regtest/mine endpoint (if available)
+/// 2. Fall back to bitcoin-cli (for use with Electrs)
 pub async fn mine_regtest_block(esplora_url: &str) -> anyhow::Result<u64> {
+    // Try esplora-mock endpoint first
     let url = format!("{}/regtest/mine", esplora_url);
     
     let client = reqwest::Client::new();
@@ -112,18 +117,71 @@ pub async fn mine_regtest_block(esplora_url: &str) -> anyhow::Result<u64> {
         .post(&url)
         .json(&serde_json::json!({ "count": 1 }))
         .send()
-        .await?;
+        .await;
     
-    if !response.status().is_success() {
-        anyhow::bail!("Failed to mine block: {}", response.status());
+    match response {
+        Ok(resp) if resp.status().is_success() => {
+            // esplora-mock endpoint worked
+            let result: serde_json::Value = resp.json().await?;
+            let new_height = result["new_height"].as_u64()
+                .ok_or_else(|| anyhow::anyhow!("Invalid response from mining endpoint"))?;
+            log::debug!("⛏️  Mined block via esplora-mock, new height: {}", new_height);
+            Ok(new_height)
+        }
+        _ => {
+            // Fall back to bitcoin-cli (for Electrs setup)
+            // Note: Mining logs are at trace level to avoid spam when mining 100+ blocks
+            
+            // Default to project root .bitcoin if BITCOIN_DATADIR not set
+            let datadir = std::env::var("BITCOIN_DATADIR")
+                .unwrap_or_else(|_| {
+                    // Try to find project root by going up from current dir
+                    let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let project_root = current_dir.parent().unwrap_or(&current_dir);
+                    format!("{}/.bitcoin", project_root.display())
+                });
+            
+            // Mine to a different address (not the test wallet) to avoid creating new coinbase UTXOs
+            // that would need their own 100-block maturity period.
+            // Using a valid Regtest address (P2WPKH from a known test vector)
+            let mining_address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+            
+            let output = tokio::process::Command::new("bitcoin-cli")
+                .args(&[
+                    "-regtest",
+                    &format!("-datadir={}", datadir),
+                    "generatetoaddress",
+                    "1",
+                    mining_address,
+                ])
+                .output()
+                .await?;
+            
+            if !output.status.success() {
+                anyhow::bail!(
+                    "bitcoin-cli failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            
+            // Get current height
+            let height_output = tokio::process::Command::new("bitcoin-cli")
+                .args(&[
+                    "-regtest",
+                    &format!("-datadir={}", datadir),
+                    "getblockcount",
+                ])
+                .output()
+                .await?;
+            
+            let height_str = String::from_utf8_lossy(&height_output.stdout);
+            let height = height_str.trim().parse::<u64>()?;
+            
+            // Use trace level to avoid spam when mining 100 blocks
+            log::trace!("⛏️  Mined block via bitcoin-cli, new height: {}", height);
+            Ok(height)
+        }
     }
-    
-    let result: serde_json::Value = response.json().await?;
-    let new_height = result["new_height"].as_u64()
-        .ok_or_else(|| anyhow::anyhow!("Invalid response from mining endpoint"))?;
-    
-    log::debug!("⛏️  Mined block, new height: {}", new_height);
-    Ok(new_height)
 }
 
 /// Wait for transaction confirmation (network-aware)
@@ -140,20 +198,31 @@ pub async fn wait_for_confirmation(
         log::info!("⛏️  Mining block to confirm transaction...");
         let new_height = mine_regtest_block(&config.esplora_url).await?;
         
-        // Verify transaction is confirmed
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Wait for Electrs to index the block (with retry logic)
+        let max_retries = 10;
+        let mut delay_ms = 100;
         
-        let url = format!("{}/tx/{}", config.esplora_url, txid);
-        let resp = reqwest::get(&url).await?;
-        let json = resp.json::<serde_json::Value>().await?;
-        
-        if json["status"]["confirmed"].as_bool().unwrap_or(false) {
-            let height = json["status"]["block_height"].as_u64().unwrap_or(new_height);
-            log::info!("✅ Confirmed in block {} (Regtest)", height);
-            return Ok(height);
+        for attempt in 1..=max_retries {
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            
+            let url = format!("{}/tx/{}", config.esplora_url, txid);
+            if let Ok(resp) = reqwest::get(&url).await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if json["status"]["confirmed"].as_bool().unwrap_or(false) {
+                        let height = json["status"]["block_height"].as_u64().unwrap_or(new_height);
+                        log::info!("✅ Confirmed in block {} after {}ms (Regtest)", height, delay_ms * attempt);
+                        return Ok(height);
+                    }
+                }
+            }
+            
+            if attempt < max_retries {
+                log::trace!("Transaction not yet confirmed, retrying in {}ms...", delay_ms);
+                delay_ms = (delay_ms as f64 * 1.5) as u64; // Exponential backoff
+            }
         }
         
-        anyhow::bail!("Transaction not confirmed after mining block");
+        anyhow::bail!("Transaction not confirmed after mining block (tried {} times)", max_retries);
     } else {
         // Signet: Poll for confirmation
         let start = Instant::now();
@@ -196,6 +265,51 @@ pub async fn wait_for_confirmation(
         
         anyhow::bail!("Transaction not confirmed after {} seconds", timeout_secs)
     }
+}
+
+/// Wait for Electrs to index up to a specific block height
+/// This ensures Electrs has fully indexed the block before querying wallet state
+pub async fn wait_for_electrs_sync(esplora_url: &str, target_height: u64) -> anyhow::Result<()> {
+    let max_retries = 20;
+    let retry_delay_ms = 500; // 500ms between attempts
+    
+    for attempt in 1..=max_retries {
+        let url = format!("{}/blocks/tip/height", esplora_url);
+        
+        match reqwest::get(&url).await {
+            Ok(resp) => {
+                if let Ok(current_height) = resp.text().await?.parse::<u64>() {
+                    if current_height >= target_height {
+                        log::debug!("✓ Electrs indexed up to block {}", current_height);
+                        return Ok(());
+                    }
+                    log::trace!("Electrs at height {}, waiting for {} (attempt {}/{})", 
+                        current_height, target_height, attempt, max_retries);
+                }
+            }
+            Err(e) => {
+                log::warn!("Electrs query failed: {} (attempt {}/{})", e, attempt, max_retries);
+            }
+        }
+        
+        if attempt < max_retries {
+            tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay_ms)).await;
+        }
+    }
+    
+    anyhow::bail!("Electrs did not catch up to block {} after {} attempts", 
+        target_height, max_retries)
+}
+
+/// Additional delay after mining to ensure RGB state is fully synced
+/// Use this before querying RGB balance after any blockchain operation
+pub async fn ensure_rgb_sync_delay(is_regtest: bool) {
+    if is_regtest {
+        // Regtest needs time for Electrs to index + RGB to process witnesses
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        log::trace!("✓ RGB sync delay completed");
+    }
+    // Signet doesn't need this - confirmations are slow enough
 }
 
 /// Pretty-print RGB balance for debugging

@@ -16,11 +16,14 @@ use rgb_persist_fs::StockpileDir;
 use serde::{Deserialize, Serialize};
 use strict_encoding::TypeName;
 
+// Re-export RGB types needed by manager
+pub use rgb::{Assignment as RgbAssignment, CreateParams as RgbCreateParams, Issuer as RgbIssuer};
+
 // Embed RGB20 schema at compile time (bundled in binary from wallet/assets/)
-const RGB20_ISSUER_BYTES: &[u8] = include_bytes!("../../../assets/RGB20-FNA.issuer");
+pub(crate) const RGB20_ISSUER_BYTES: &[u8] = include_bytes!("../../../assets/RGB20-FNA.issuer");
 
 // Cache issuer (loaded once)
-static RGB20_ISSUER: OnceLock<Issuer> = OnceLock::new();
+pub(crate) static RGB20_ISSUER: OnceLock<Issuer> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoundAsset {
@@ -391,7 +394,7 @@ fn parse_outpoint(utxo_str: &str) -> Result<Outpoint, crate::error::WalletError>
 }
 
 // Helper: Map precision number to string
-fn map_precision(precision: u8) -> &'static str {
+pub fn map_precision(precision: u8) -> &'static str {
     match precision {
         0 => "indivisible",
         1 => "deci",
