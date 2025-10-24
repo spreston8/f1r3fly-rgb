@@ -19,7 +19,7 @@ export default function Layout({ children }: LayoutProps) {
               <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
                 🏦 RGB Wallet
               </h1>
-              <span className="text-sm text-gray-500 dark:text-gray-400 font-normal">(Signet)</span>
+              <span className="text-sm text-gray-500 dark:text-gray-400 font-normal">(Signet) (RGB v0.12)</span>
             </Link>
             <div className="flex items-center space-x-3">
               <FireflyStatus />

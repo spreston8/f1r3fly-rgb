@@ -15,6 +15,8 @@ pub struct WalletConfig {
     pub esplora_url: String,
     /// Optional Bitcoin Core RPC URL (for direct RPC access)
     pub bitcoin_rpc_url: Option<String>,
+    /// Public URL of this wallet API server (for generating download links)
+    pub public_url: String,
 }
 
 impl WalletConfig {
@@ -24,6 +26,7 @@ impl WalletConfig {
     /// - `BITCOIN_NETWORK`: "signet" (default) or "regtest"
     /// - `ESPLORA_URL`: Esplora API endpoint (optional, has sensible defaults)
     /// - `BITCOIN_RPC_URL`: Bitcoin Core RPC endpoint (optional)
+    /// - `PUBLIC_URL`: Public URL of this wallet API (for generating download links)
     /// 
     /// # Examples
     /// 
@@ -85,11 +88,17 @@ impl WalletConfig {
             log::info!("🔗 Bitcoin RPC URL: {}", url);
         }
         
+        // Public URL for this wallet API server (used for download links)
+        let public_url = env::var("PUBLIC_URL")
+            .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        log::info!("🌍 Public API URL: {}", public_url);
+        
         Self {
             bitcoin_network,
             bpstd_network,
             esplora_url,
             bitcoin_rpc_url,
+            public_url,
         }
     }
     
@@ -120,6 +129,7 @@ impl Default for WalletConfig {
             bpstd_network: bpstd::Network::Signet,
             esplora_url: "https://mempool.space/signet/api".to_string(),
             bitcoin_rpc_url: None,
+            public_url: "http://localhost:3000".to_string(),
         }
     }
 }
