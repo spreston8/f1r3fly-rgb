@@ -10,6 +10,7 @@ on:
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
+  RUST_LOG: wallet=debug,hyper=warn,reqwest=warn,rustls=warn
 
 jobs:
   rgb-transfer-test:
