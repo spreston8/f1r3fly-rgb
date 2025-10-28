@@ -34,8 +34,11 @@ impl WalletManager {
             config.esplora_url.clone(),
         );
         
-        // Initialize Firefly client (gRPC port 40401, HTTP port 40403)
-        let firefly_client = Some(FireflyClient::new("localhost", 40401));
+        // Initialize Firefly client from config
+        let firefly_client = Some(FireflyClient::new(
+            &config.firefly_host,
+            config.firefly_grpc_port,
+        ));
         
         Self {
             config: config.clone(),
@@ -258,9 +261,10 @@ impl WalletManager {
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         let invoice_str = invoice_str.to_string();
+        let public_url = self.config.public_url.clone();
         
         tokio::task::spawn_blocking(move || {
-            Self::send_transfer_blocking(&storage, &rgb_mgr, &wallet_name, &invoice_str, fee_rate_sat_vb)
+            Self::send_transfer_blocking(&storage, &rgb_mgr, &wallet_name, &invoice_str, fee_rate_sat_vb, &public_url)
         })
                 .await
         .map_err(|e| WalletError::Internal(format!("Send transfer task panicked: {}", e)))?
@@ -293,9 +297,10 @@ impl WalletManager {
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
         let contract_id_str = contract_id_str.to_string();
+        let public_url = self.config.public_url.clone();
         
         tokio::task::spawn_blocking(move || {
-            Self::export_genesis_blocking(&storage, &rgb_mgr, &wallet_name, &contract_id_str)
+            Self::export_genesis_blocking(&storage, &rgb_mgr, &wallet_name, &contract_id_str, &public_url)
         })
         .await
         .map_err(|e| WalletError::Internal(format!("Export genesis task panicked: {}", e)))?
@@ -477,6 +482,7 @@ impl WalletManager {
         wallet_name: &str,
         invoice_str: &str,
         fee_rate_sat_vb: Option<u64>,
+        public_url: &str,
     ) -> Result<SendTransferResponse, WalletError> {
         super::rgb_transfer_ops::send_transfer(
             storage,
@@ -484,6 +490,7 @@ impl WalletManager {
             wallet_name,
             invoice_str,
             fee_rate_sat_vb,
+            public_url,
             |wn, conf, msg| {
                 super::sync_ops::sync_rgb_internal(storage, rgb_runtime_manager, wn, conf, msg)
             },
@@ -512,12 +519,14 @@ impl WalletManager {
         rgb_runtime_manager: &RgbRuntimeManager,
         wallet_name: &str,
         contract_id_str: &str,
+        public_url: &str,
     ) -> Result<ExportGenesisResponse, WalletError> {
         super::rgb_consignment_ops::export_genesis_consignment(
             storage,
             rgb_runtime_manager,
             wallet_name,
             contract_id_str,
+            public_url,
         )
     }
 

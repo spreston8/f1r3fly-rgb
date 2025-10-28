@@ -186,6 +186,7 @@ pub fn export_genesis_consignment(
     rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
     contract_id_str: &str,
+    public_url: &str,
 ) -> Result<ExportGenesisResponse, WalletError> {
     log::info!(
         "Exporting genesis consignment for wallet: {}, contract: {}",
@@ -272,7 +273,7 @@ pub fn export_genesis_consignment(
         contract_id: contract_id_str.to_string(),
         consignment_filename: consignment_filename.clone(),
         file_size_bytes: file_size,
-        download_url: format!("/api/genesis/{}", consignment_filename),
+        download_url: format!("{}/api/genesis/{}", public_url, consignment_filename),
     })
     // Runtime drops here → FileHolder::drop() auto-saves to disk
 }

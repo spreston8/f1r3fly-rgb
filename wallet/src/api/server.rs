@@ -11,6 +11,30 @@ use crate::wallet::manager::WalletManager;
 pub async fn start_server(addr: &str) -> anyhow::Result<()> {
     let wallet_manager = Arc::new(WalletManager::new());
 
+    // Configure CORS based on environment
+    // Set ALLOWED_ORIGINS="https://your-app.vercel.app,https://your-app-preview.vercel.app" for production
+    // If not set, allows any origin (development mode)
+    let cors = match std::env::var("ALLOWED_ORIGINS") {
+        Ok(origins) if !origins.is_empty() => {
+            log::info!("CORS configured for origins: {}", origins);
+            let origin_list: Vec<_> = origins
+                .split(',')
+                .map(|s| s.trim().parse().expect("Invalid CORS origin"))
+                .collect();
+            CorsLayer::new()
+                .allow_origin(origin_list)
+                .allow_methods(Any)
+                .allow_headers(Any)
+        }
+        _ => {
+            log::warn!("CORS: Allowing all origins (development mode). Set ALLOWED_ORIGINS env var for production.");
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any)
+        }
+    };
+
     let app = Router::new()
         // Firefly integration
         .route(
@@ -86,12 +110,7 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
             "/api/genesis/:filename",
             get(handlers::download_genesis_handler),
         )
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(cors)
         .with_state(wallet_manager.clone());
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

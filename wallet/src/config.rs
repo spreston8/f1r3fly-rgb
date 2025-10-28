@@ -15,6 +15,14 @@ pub struct WalletConfig {
     pub esplora_url: String,
     /// Optional Bitcoin Core RPC URL (for direct RPC access)
     pub bitcoin_rpc_url: Option<String>,
+    /// Public URL of this wallet API server (for generating download links)
+    pub public_url: String,
+    /// Firefly node host
+    pub firefly_host: String,
+    /// Firefly gRPC port (for deploy/propose operations)
+    pub firefly_grpc_port: u16,
+    /// Firefly HTTP port (for status/query operations)
+    pub firefly_http_port: u16,
 }
 
 impl WalletConfig {
@@ -24,6 +32,10 @@ impl WalletConfig {
     /// - `BITCOIN_NETWORK`: "signet" (default) or "regtest"
     /// - `ESPLORA_URL`: Esplora API endpoint (optional, has sensible defaults)
     /// - `BITCOIN_RPC_URL`: Bitcoin Core RPC endpoint (optional)
+    /// - `PUBLIC_URL`: Public URL of this wallet API (for generating download links)
+    /// - `FIREFLY_HOST`: Firefly node host (default: "localhost")
+    /// - `FIREFLY_GRPC_PORT`: Firefly gRPC port (default: 40401)
+    /// - `FIREFLY_HTTP_PORT`: Firefly HTTP port (default: 40403)
     /// 
     /// # Examples
     /// 
@@ -85,11 +97,34 @@ impl WalletConfig {
             log::info!("🔗 Bitcoin RPC URL: {}", url);
         }
         
+        // Public URL for this wallet API server (used for download links)
+        let public_url = env::var("PUBLIC_URL")
+            .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        log::info!("🌍 Public API URL: {}", public_url);
+        
+        // Firefly node configuration
+        let firefly_host = env::var("FIREFLY_HOST")
+            .unwrap_or_else(|_| "localhost".to_string());
+        let firefly_grpc_port = env::var("FIREFLY_GRPC_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(40401);
+        let firefly_http_port = env::var("FIREFLY_HTTP_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(40403);
+        log::info!("🔥 Firefly: {}:{} (gRPC), {}:{} (HTTP)", 
+                   firefly_host, firefly_grpc_port, firefly_host, firefly_http_port);
+        
         Self {
             bitcoin_network,
             bpstd_network,
             esplora_url,
             bitcoin_rpc_url,
+            public_url,
+            firefly_host,
+            firefly_grpc_port,
+            firefly_http_port,
         }
     }
     
@@ -120,6 +155,10 @@ impl Default for WalletConfig {
             bpstd_network: bpstd::Network::Signet,
             esplora_url: "https://mempool.space/signet/api".to_string(),
             bitcoin_rpc_url: None,
+            public_url: "http://localhost:3000".to_string(),
+            firefly_host: "localhost".to_string(),
+            firefly_grpc_port: 40401,
+            firefly_http_port: 40403,
         }
     }
 }

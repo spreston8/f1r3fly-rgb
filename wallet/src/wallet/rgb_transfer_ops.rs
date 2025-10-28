@@ -206,6 +206,7 @@ pub fn send_transfer(
     wallet_name: &str,
     invoice_str: &str,
     fee_rate_sat_vb: Option<u64>,
+    public_url: &str,
     _sync_fn: impl Fn(&str, u32, &str) -> Result<(), WalletError>,
 ) -> Result<SendTransferResponse, WalletError> {
     log::info!("Initiating RGB transfer for wallet: {} (using ephemeral runtime)", wallet_name);
@@ -453,7 +454,7 @@ pub fn send_transfer(
     // Return response
     Ok(SendTransferResponse {
         bitcoin_txid: txid_str,
-        consignment_download_url: format!("/api/consignment/{}", consignment_filename),
+        consignment_download_url: format!("{}/api/consignment/{}", public_url, consignment_filename),
         consignment_filename,
         status: "broadcasted".to_string(),
     })

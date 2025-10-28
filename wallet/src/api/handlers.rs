@@ -347,10 +347,13 @@ pub async fn download_genesis_handler(
 
 // Firefly integration handler
 pub async fn get_firefly_status_handler(
+    State(manager): State<Arc<WalletManager>>,
 ) -> Result<Json<super::types::FireflyNodeStatus>, crate::error::WalletError> {
     use super::types::FireflyNodeStatus;
 
-    let firefly_url = "http://localhost:40403";
+    let firefly_url = format!("http://{}:{}", 
+                              manager.config.firefly_host, 
+                              manager.config.firefly_http_port);
     let status_endpoint = format!("{}/status", firefly_url);
 
     // Try to connect to Firefly node

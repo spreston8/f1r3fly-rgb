@@ -17,7 +17,10 @@ RUST_LOG=wallet=debug cargo run
 Enable detailed logging for development and troubleshooting:
 
 ```bash
-# Start server
+# Production example
+BIND_ADDRESS=0.0.0.0:3000 \
+ALLOWED_ORIGINS=https://your-app.vercel.app \
+RUST_LOG=info \
 cargo run --release
 ```
 
