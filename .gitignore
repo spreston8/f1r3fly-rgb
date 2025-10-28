@@ -4,4 +4,4 @@
 .regtest-pids
 db/
 logs/
-target
+target/
