@@ -1,0 +1,103 @@
+name: RGB Transfer Balance Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rgb-transfer-test:
+    name: RGB Transfer Balance Test (Signet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # Give test enough time to complete on Signet
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            wallet/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev
+
+      - name: Create .env file
+        working-directory: wallet
+        run: |
+          cat << EOF > .env
+          # Bitcoin Network Configuration
+          BITCOIN_NETWORK=signet
+          ESPLORA_URL=https://mempool.space/signet/api
+          
+          # Test Configuration
+          TEST_MNEMONIC="${{ secrets.TEST_MNEMONIC }}"
+          TEST_TIMEOUT=1200
+          TEST_FEE_RATE=20
+          
+          # Wallet API Configuration
+          PUBLIC_URL=http://localhost:3000
+          
+          # Firefly Node Configuration
+          FIREFLY_HOST=localhost
+          FIREFLY_GRPC_PORT=40401
+          FIREFLY_HTTP_PORT=40403
+          EOF
+
+      - name: Verify .env file created
+        working-directory: wallet
+        run: |
+          if [ -f .env ]; then
+            echo "✓ .env file created successfully"
+            echo "Environment variables (excluding sensitive data):"
+            grep -v "TEST_MNEMONIC" .env || true
+          else
+            echo "✗ Failed to create .env file"
+            exit 1
+          fi
+
+      - name: Run RGB Transfer Balance Test
+        working-directory: wallet
+        run: |
+          echo "Starting RGB transfer balance test on Signet network..."
+          echo "This test will take approximately 15-20 minutes due to blockchain confirmations."
+          cargo test --test rgb_transfer_balance_test -- --ignored --nocapture
+
+      - name: Test Summary
+        if: always()
+        run: |
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "✅ RGB Transfer Balance Test PASSED"
+            echo "The test successfully verified:"
+            echo "  • Asset issuance on Signet"
+            echo "  • RGB token transfers"
+            echo "  • Balance persistence after blockchain confirmations"
+          else
+            echo "❌ RGB Transfer Balance Test FAILED"
+            echo "Check the logs above for details."
+          fi
+
