@@ -38,6 +38,7 @@ impl WalletManager {
         let firefly_client = Some(FireflyClient::new(
             &config.firefly_host,
             config.firefly_grpc_port,
+            config.firefly_http_port,
         ));
         
         Self {
@@ -166,8 +167,46 @@ impl WalletManager {
     }
 
     // ============================================================================
-    // Bitcoin Operations (delegates to bitcoin_ops)
+    // Bitcoin Validation (F1r3fly state validation against Bitcoin)
     // ============================================================================
+
+    /// Validate F1r3fly allocation against Bitcoin blockchain
+    /// This is a critical security method that ensures F1r3fly state matches Bitcoin reality
+    pub async fn validate_f1r3fly_allocation(
+        &self,
+        allocation: &crate::firefly::types::Allocation,
+    ) -> Result<bool, WalletError> {
+        let validator = super::shared::BitcoinValidator::new(&self.config);
+        
+        validator.validate_allocation(allocation).await
+            .map_err(|e| WalletError::Validation(e.to_string()))
+    }
+
+    /// Validate a state transition against Bitcoin
+    pub async fn validate_f1r3fly_transition(
+        &self,
+        from_utxo: &str,
+        to_utxo: &str,
+        amount: u64,
+        bitcoin_txid: &str,
+    ) -> Result<bool, WalletError> {
+        let validator = super::shared::BitcoinValidator::new(&self.config);
+        
+        validator.validate_transition(from_utxo, to_utxo, amount, bitcoin_txid).await
+            .map_err(|e| WalletError::Validation(e.to_string()))
+    }
+
+    /// Check if a Bitcoin transaction is confirmed with sufficient confirmations
+    pub async fn is_bitcoin_transaction_confirmed(
+        &self,
+        txid: &str,
+        min_confirmations: Option<u32>,
+    ) -> Result<bool, WalletError> {
+        let validator = super::shared::BitcoinValidator::new(&self.config);
+        
+        validator.is_transaction_confirmed(txid, min_confirmations).await
+            .map_err(|e| WalletError::Validation(e.to_string()))
+    }
 
     pub async fn create_utxo(
         &self,

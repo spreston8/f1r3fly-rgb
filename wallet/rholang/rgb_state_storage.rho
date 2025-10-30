@@ -1,0 +1,75 @@
+// RGB State Storage Contracts for F1r3fly/RSpace++
+// These contracts use RSpace++ channels for persistent state storage
+
+new StoreContract, StoreAllocation, GetAllocation, RecordTransition, GetContract, SearchContractByTicker in {
+  
+  // Contract: Store RGB20 contract metadata in RSpace++
+  contract StoreContract(@contractId, @ticker, @name, @precision, @totalSupply, @genesisTxid, @issuerPubKey, return) = {
+    // Store contract metadata in RSpace++ channel
+    @["rgb", "contracts", contractId]!({
+      "schema": "RGB20",
+      "ticker": ticker,
+      "name": name,
+      "precision": precision,
+      "total_supply": totalSupply,
+      "genesis_txid": genesisTxid,
+      "issuer": issuerPubKey
+    }) |
+    
+    // Index by ticker for discovery
+    @["rgb", "contracts_by_ticker", ticker]!(contractId) |
+    
+    return!({"success": true, "contract_id": contractId})
+  } |
+  
+  // Contract: Store allocation (who owns what UTXO) in RSpace++
+  contract StoreAllocation(@contractId, @utxo, @ownerPubKey, @amount, @bitcoinTxid, return) = {
+    // Store allocation in RSpace++ channel
+    @["rgb", "allocations", contractId, utxo]!({
+      "owner": ownerPubKey,
+      "amount": amount,
+      "bitcoin_txid": bitcoinTxid,
+      "confirmed": false
+    }) |
+    
+    return!({"success": true, "utxo": utxo})
+  } |
+  
+  // Contract: Query allocation from RSpace++
+  contract GetAllocation(@contractId, @utxo, return) = {
+    for (@allocation <<- @["rgb", "allocations", contractId, utxo]) {
+      return!({"success": true, "allocation": allocation})
+    }
+  } |
+  
+  // Contract: Record state transition in RSpace++
+  contract RecordTransition(@contractId, @fromUtxo, @toUtxo, @amount, @bitcoinTxid, return) = {
+    new transitionId in {
+      @["rgb", "transitions", contractId, *transitionId]!({
+        "from": fromUtxo,
+        "to": toUtxo,
+        "amount": amount,
+        "bitcoin_txid": bitcoinTxid,
+        "validated": false
+      }) |
+      
+      return!({"success": true, "transition_id": *transitionId})
+    }
+  } |
+  
+  // Contract: Query contract metadata
+  contract GetContract(@contractId, return) = {
+    for (@contractData <<- @["rgb", "contracts", contractId]) {
+      return!({"success": true, "contract": contractData})
+    }
+  } |
+  
+  // Contract: Search contracts by ticker
+  contract SearchContractByTicker(@ticker, return) = {
+    for (@contractId <<- @["rgb", "contracts_by_ticker", ticker]) {
+      for (@contractData <<- @["rgb", "contracts", contractId]) {
+        return!({"success": true, "contract_id": contractId, "contract": contractData})
+      }
+    }
+  }
+}

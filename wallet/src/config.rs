@@ -19,7 +19,7 @@ pub struct WalletConfig {
     pub public_url: String,
     /// Firefly node host
     pub firefly_host: String,
-    /// Firefly gRPC port (for deploy/propose operations)
+    /// Firefly gRPC port (for deploy operations)
     pub firefly_grpc_port: u16,
     /// Firefly HTTP port (for status/query operations)
     pub firefly_http_port: u16,

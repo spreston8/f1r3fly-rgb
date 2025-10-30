@@ -257,22 +257,15 @@ impl RgbManager {
         })?;
         log::info!("Firefly deploy ID: {}", deploy_id);
 
-        // STEP 3: Propose block to include deploy
-        log::debug!("Proposing Firefly block");
-        let block_hash = firefly_client.propose().await.map_err(|e| {
-            crate::error::WalletError::Network(format!("Firefly propose failed: {}", e))
-        })?;
-        log::info!("Firefly block hash: {}", block_hash);
-
-        // STEP 4: Wait for deploy to be included
-        log::info!("Waiting for deploy to be included in block");
-        let _confirmed_block = firefly_client
+        // STEP 3: Wait for deploy to be included in block (auto-proposed by shard)
+        log::info!("Waiting for deploy to be included in block (shard will auto-propose)");
+        let block_hash = firefly_client
             .wait_for_deploy(&deploy_id, 10)
             .await
             .map_err(|e| {
                 crate::error::WalletError::Network(format!("Failed to confirm deploy: {}", e))
             })?;
-        log::info!("Deploy confirmed in Firefly block");
+        log::info!("Deploy confirmed in Firefly block: {}", block_hash);
 
         // STEP 5: Issue RGB contract via ALuVM (legacy path)
         log::info!("Issuing RGB contract via ALuVM");
@@ -304,47 +297,67 @@ impl RgbManager {
         })
     }
 
-    /// Generate Rholang code for RGB20 asset issuance
+    /// Generate Rholang code for RGB20 asset issuance using new state storage contracts
     fn generate_rgb20_rholang(
         &self,
         request: &IssueAssetRequest,
     ) -> Result<String, crate::error::WalletError> {
-        // Load template
-        let template = include_str!("../../../rholang/rgb20_asset.rho");
+        // Load new state storage template
+        let template = include_str!("../../../rholang/rgb_state_storage.rho");
 
         let timestamp = chrono::Utc::now().timestamp();
+        
+        // Generate a unique contract ID (simplified for now)
+        let contract_id = format!("rgb20_{}_{}", request.ticker, timestamp);
 
-        // Instantiate contract with parameters
-        // The contract executes and logs to stdout, proving the deploy succeeded
+        // Instantiate contracts with parameters using new state storage approach
         let rholang_code = format!(
             r#"
 {}
 
-// Instantiate RGB20 asset contract with parameters
+// Instantiate RGB20 asset contracts with parameters
 new return, stdout(`rho:io:stdout`) in {{
-  @"RGB20Asset"!(
-    "{}",      // name
+  // Step 1: Store contract metadata
+  @"StoreContract"!(
+    "{}",      // contractId
     "{}",      // ticker
+    "{}",      // name
     {},        // precision
-    {},        // supply
-    "{}",      // genesis_utxo
-    {},        // timestamp
+    {},        // totalSupply
+    "{}",      // genesisTxid (using genesis_utxo as txid for now)
+    "issuer_pubkey_placeholder", // issuerPubKey (placeholder)
     *return
   ) |
   
-  // Log the result for verification
-  for(@result <- return) {{
-    stdout!(["RGB20 Asset Issuance Complete:", result])
+  // Step 2: Store initial allocation
+  for(@contractResult <- return) {{
+    @"StoreAllocation"!(
+      "{}",      // contractId
+      "{}",      // utxo
+      "issuer_pubkey_placeholder", // ownerPubKey (placeholder)
+      {},        // amount
+      "{}",      // bitcoinTxid (using genesis_utxo as txid for now)
+      *return
+    ) |
+    
+    // Log the result for verification
+    for(@allocationResult <- return) {{
+      stdout!(["RGB20 Asset Issuance Complete:", contractResult, allocationResult])
+    }}
   }}
 }}
             "#,
             template,
-            request.name,
+            contract_id,
             request.ticker,
+            request.name,
             request.precision,
             request.supply,
             request.genesis_utxo,
-            timestamp
+            contract_id,
+            request.genesis_utxo,
+            request.supply,
+            request.genesis_utxo
         );
 
         Ok(rholang_code)

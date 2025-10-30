@@ -4,6 +4,7 @@
 
 pub mod addresses;
 pub mod balance;
+pub mod bitcoin_validator;
 pub mod keys;
 pub mod rgb;
 pub mod rgb_runtime;
@@ -16,6 +17,7 @@ pub mod transaction;
 // Re-export commonly used items for convenience
 pub use addresses::AddressManager;
 pub use balance::BalanceChecker;
+pub use bitcoin_validator::BitcoinValidator;
 pub use keys::KeyManager;
 pub use rgb::RgbManager;
 pub use rgb_runtime::RgbRuntimeManager;

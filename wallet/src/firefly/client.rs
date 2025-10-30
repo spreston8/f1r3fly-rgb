@@ -1,17 +1,18 @@
 use blake2::{Blake2b, Digest};
 use f1r3fly_models::casper::v1::deploy_response::Message as DeployResponseMessage;
 use f1r3fly_models::casper::v1::deploy_service_client::DeployServiceClient;
-use f1r3fly_models::casper::v1::propose_response::Message as ProposeResponseMessage;
-use f1r3fly_models::casper::v1::propose_service_client::ProposeServiceClient;
-use f1r3fly_models::casper::{BlocksQuery, DeployDataProto, LightBlockInfo, ProposeQuery};
+use f1r3fly_models::casper::{BlocksQuery, DeployDataProto, LightBlockInfo};
 use f1r3fly_models::ByteString;
 use prost::Message;
 use secp256k1::{Message as Secp256k1Message, Secp256k1, SecretKey};
 use std::time::{SystemTime, UNIX_EPOCH};
 use typenum::U32;
 
+use crate::firefly::types::*;
+
 /// Bootstrap private key from standalone.yml
 /// validator-private-key: 5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657
+/// TODO: Move to env
 const BOOTSTRAP_PRIVATE_KEY: &str =
     "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657";
 
@@ -19,10 +20,11 @@ pub struct FireflyClient {
     signing_key: SecretKey,
     node_host: String,
     grpc_port: u16,
+    http_port: u16,
 }
 
 impl FireflyClient {
-    pub fn new(host: &str, grpc_port: u16) -> Self {
+    pub fn new(host: &str, grpc_port: u16, http_port: u16) -> Self {
         let signing_key = SecretKey::from_slice(
             &hex::decode(BOOTSTRAP_PRIVATE_KEY).expect("Failed to decode bootstrap private key"),
         )
@@ -32,6 +34,7 @@ impl FireflyClient {
             signing_key,
             node_host: host.to_string(),
             grpc_port,
+            http_port,
         }
     }
 
@@ -97,40 +100,6 @@ impl FireflyClient {
                 } else {
                     Ok(cleaned_result.to_string())
                 }
-            }
-        }
-    }
-
-    /// Propose block
-    pub async fn propose(&self) -> Result<String, Box<dyn std::error::Error>> {
-        // Connect to the F1r3fly node's propose service
-        let mut propose_client =
-            ProposeServiceClient::connect(format!("http://{}:{}/", self.node_host, self.grpc_port))
-                .await?;
-
-        // Send the propose request
-        let propose_response = propose_client
-            .propose(ProposeQuery { is_async: false })
-            .await?
-            .into_inner();
-
-        // Process the response
-        let message = propose_response.message.ok_or("Missing propose response")?;
-
-        match message {
-            ProposeResponseMessage::Result(block_hash) => {
-                // Extract the block hash from the response
-                if let Some(hash) = block_hash
-                    .strip_prefix("Success! Block ")
-                    .and_then(|s| s.strip_suffix(" created and added."))
-                {
-                    Ok(hash.to_string())
-                } else {
-                    Ok(block_hash)
-                }
-            }
-            ProposeResponseMessage::Error(error) => {
-                Err(format!("Propose error: {:?}", error).into())
             }
         }
     }
@@ -293,6 +262,172 @@ impl FireflyClient {
             sig_algorithm: "secp256k1".into(),
             deployer: ByteString::from(pub_key_bytes),
         }
+    }
+
+    // ============================================================================
+    // HTTP API Query Methods for RSpace++ State Storage
+    // ============================================================================
+
+    /// Query RSpace++ state using exploratory deploy
+    /// This method uses the F1r3node HTTP API to execute Rholang queries without committing to blockchain
+    pub async fn query_state(&self, query_code: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let client = reqwest::Client::new();
+        
+        let response = client
+            .post(&format!("http://{}:{}/explore-deploy", self.node_host, self.http_port))
+            .header("Content-Type", "application/json")
+            .json(&query_code)
+            .send()
+            .await?;
+        
+        if response.status().is_success() {
+            let result: serde_json::Value = response.json().await?;
+            Ok(serde_json::to_string(&result)?)
+        } else {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            Err(format!("Query failed with status {}: {}", status, error_text).into())
+        }
+    }
+
+    /// Query specific allocation data using GetAllocation contract
+    pub async fn query_allocation(
+        &self,
+        contract_id: &str,
+        utxo: &str,
+    ) -> Result<AllocationData, Box<dyn std::error::Error>> {
+        let query_code = format!(
+            r#"
+            new return in {{
+              @"GetAllocation"!("{}", "{}", *return) |
+              for(@result <- return) {{
+                return!(result)
+              }}
+            }}
+            "#,
+            contract_id, utxo
+        );
+        
+        let result = self.query_state(&query_code).await?;
+        let allocation: AllocationData = serde_json::from_str(&result)?;
+        Ok(allocation)
+    }
+
+    /// Query contract metadata using GetContract contract
+    pub async fn query_contract(
+        &self,
+        contract_id: &str,
+    ) -> Result<ContractData, Box<dyn std::error::Error>> {
+        let query_code = format!(
+            r#"
+            new return in {{
+              @"GetContract"!("{}", *return) |
+              for(@result <- return) {{
+                return!(result)
+              }}
+            }}
+            "#,
+            contract_id
+        );
+        
+        let result = self.query_state(&query_code).await?;
+        let contract: ContractData = serde_json::from_str(&result)?;
+        Ok(contract)
+    }
+
+    /// Search contracts by ticker using SearchContractByTicker contract
+    pub async fn search_contract_by_ticker(
+        &self,
+        ticker: &str,
+    ) -> Result<ContractSearchResult, Box<dyn std::error::Error>> {
+        let query_code = format!(
+            r#"
+            new return in {{
+              @"SearchContractByTicker"!("{}", *return) |
+              for(@result <- return) {{
+                return!(result)
+              }}
+            }}
+            "#,
+            ticker
+        );
+        
+        let result = self.query_state(&query_code).await?;
+        let search_result: ContractSearchResult = serde_json::from_str(&result)?;
+        Ok(search_result)
+    }
+
+    // ============================================================================
+    // State Storage Methods (Deploy Operations)
+    // ============================================================================
+
+    /// Store contract metadata using StoreContract
+    /// This method deploys a contract to the blockchain to store contract metadata
+    pub async fn store_contract(
+        &self,
+        contract_id: &str,
+        metadata: ContractMetadata,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let store_code = format!(
+            r#"
+            new return in {{
+              @"StoreContract"!(
+                "{}",
+                "{}",
+                "{}",
+                {},
+                {},
+                "{}",
+                "{}",
+                *return
+              ) |
+              for(@result <- return) {{
+                return!(result)
+              }}
+            }}
+            "#,
+            contract_id,
+            metadata.ticker,
+            metadata.name,
+            metadata.precision,
+            metadata.total_supply,
+            metadata.genesis_txid,
+            metadata.issuer_pubkey
+        );
+        
+        self.deploy(&store_code).await
+    }
+
+    /// Store allocation using StoreAllocation
+    /// This method deploys a contract to store allocation data in RSpace++
+    pub async fn store_allocation(
+        &self,
+        contract_id: &str,
+        utxo: &str,
+        owner_pubkey: &str,
+        amount: u64,
+        bitcoin_txid: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let store_code = format!(
+            r#"
+            new return in {{
+              @"StoreAllocation"!(
+                "{}",
+                "{}",
+                "{}",
+                {},
+                "{}",
+                *return
+              ) |
+              for(@result <- return) {{
+                return!(result)
+              }}
+            }}
+            "#,
+            contract_id, utxo, owner_pubkey, amount, bitcoin_txid
+        );
+        
+        self.deploy(&store_code).await
     }
 }
 

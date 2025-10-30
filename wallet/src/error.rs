@@ -43,6 +43,9 @@ pub enum WalletError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
 }
 
 #[derive(Error, Debug)]
