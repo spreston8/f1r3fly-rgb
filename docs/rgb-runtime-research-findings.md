@@ -2042,6 +2042,202 @@ pub fn accept_consignment(
 
 ---
 
+## RGB Smart Contract System Deep Dive
+
+### Research Date: October 28, 2025
+
+### Discovery: How RGB Contracts Actually Work
+
+#### The `.issuer` File System
+
+**Key Finding**: RGB contracts are NOT written in a traditional programming language like Solidity or Rholang.
+
+**What is an `.issuer` file?**
+- **Binary compiled schema file** (not source code)
+- Contains:
+  - Contract **interface** (methods, state types)
+  - **Validation rules** in AluVM bytecode
+  - **Type definitions** (state structure)
+  - **Execution semantics** (state transition logic)
+
+**Location in Codebase**:
+- `wallet/assets/RGB20-FNA.issuer` - RGB20 fungible token schema
+- `rgb/examples/RGB20-FNA.issuer` - Reference implementation
+- `rgb-std/tests/data/Test.issuer` - Test schemas
+
+#### RGB Contract Language: Declarative Schemas + AluVM
+
+RGB uses a two-layer approach:
+
+**1. Schema Layer (Declarative)**
+Contracts are defined as declarative schemas specifying:
+
+```yaml
+# Conceptual structure (actual format is binary)
+schema: RGB20-Fungible-Asset
+version: 0.12.0
+
+global_state:
+  ticker: String          # Immutable metadata
+  name: String
+  precision: U8
+  total_supply: U64
+
+owned_state:
+  balance: U64           # Transferable, bound to Bitcoin UTXOs
+
+operations:
+  issue: Creates initial supply
+  transfer: Moves balance between seals
+  burn: Destroys tokens
+```
+
+**2. Execution Layer: Hypersonic + AluVM**
+
+From `rgb-std/src/contract.rs:35`:
+```rust
+use hypersonic::{
+    AcceptError, Articles, AuthToken, CallParams, CellAddr, Codex, Consensus, ContractId,
+    CoreParams, DataCell, EffectiveState, IssueError, IssueParams, Ledger, LibRepo, Memory,
+    MethodName, NamedState, Operation, Opid, SemanticError, Semantics, SigBlob, StateAtom,
+    StateName, Stock, Transition,
+};
+```
+
+**Hypersonic** is the execution engine that:
+- Loads `.issuer` schema files
+- Executes AluVM bytecode for validation
+- Manages contract state and transitions
+- Ensures deterministic execution
+
+**AluVM** (Arithmetic Logic Unit Virtual Machine):
+- Register-based virtual machine
+- Deterministic execution (required for client-side validation)
+- Similar role to WASM in other systems
+- Executes validation logic and state transitions
+
+#### Custom RGB Contracts: Feasibility
+
+**Standard Contracts**:
+- RGB20 (fungible tokens) - Pre-built, audited ✅
+- RGB21 (NFTs) - Pre-built, audited ✅
+- Cover 90% of use cases
+
+**Custom Contracts**:
+- **Possible** but requires:
+  - Schema definition (declarative format)
+  - AluVM bytecode compilation
+  - Tools: `rgb-schemata` crate, `hypersonic` compiler
+  - Deep understanding of client-side validation model
+
+**Difficulty Level**: HIGH
+- Not a traditional smart contract language
+- Limited tooling/documentation
+- Must understand single-use seals deeply
+- Requires deterministic validation logic
+
+#### Key Execution Flow Discovery
+
+**Primary Hook Point** (`rgb-std/src/contract.rs:617-628`):
+
+```rust
+pub fn call(
+    &mut self,
+    call: CallParams,
+    seals: SmallOrdMap<u16, <P::Seal as RgbSeal>::Definition>,
+) -> Result<Operation, MultiError<AcceptError, S::Error>> {
+    let opid = self.ledger.call(call)?;  // ← CONTRACT EXECUTION HAPPENS HERE
+    let operation = self.ledger.operation(opid);
+    debug_assert_eq!(operation.opid(), opid);
+    self.pile.add_seals(opid, seals);
+    debug_assert_eq!(operation.contract_id, self.contract_id());
+    Ok(operation)
+}
+```
+
+**`self.ledger.call(call)`** invokes:
+1. AluVM bytecode execution
+2. State transition validation
+3. New state computation
+4. Operation record creation
+
+#### Contract Validation Flow
+
+**Ledger Structure** (from `rgb-std/src/contract.rs:600-608`):
+
+```rust
+// Ledger manages state transitions
+self.ledger.rollback(roll_back)?;     // Undo invalid ops
+self.ledger.forward(forward)?;         // Apply valid ops
+self.pile.commit_transaction();        // Persist to storage
+```
+
+**Key Components**:
+- **Ledger**: Manages contract state and operations (Hypersonic)
+- **Pile**: Manages seals (UTXO bindings) and witnesses (Bitcoin TXs)
+- **Stockpile**: Persistent storage for contract data
+
+#### Integration Points for F1r3fly/Rholang
+
+**Identified Hook Locations**:
+
+1. **Contract Creation** (`Contract::issue` - line 317)
+   - When issuing new contracts
+   - Hook: Deploy Rholang equivalent to F1r3fly
+
+2. **State Transitions** (`Contract::call` - line 617)
+   - Every contract method invocation
+   - Hook: Execute via Rholang, create anchor proof
+
+3. **Validation** (`Contract::evaluate_commit` - line 803)
+   - When validating consignments
+   - Hook: Verify Rholang anchor proofs
+
+4. **Consignment Export** (`Contract::consign` - line 699)
+   - When creating transfer packages
+   - Hook: Include Rholang anchor data
+
+#### Architecture for Hybrid System
+
+**Proposed Structure**:
+```rust
+pub struct HybridLedger<S: Stock> {
+    aluvm_ledger: Ledger<S>,           // Original RGB (Hypersonic)
+    rholang_executor: Option<RholangExecutor>,
+    execution_mode: ExecutionMode,
+}
+
+enum ExecutionMode {
+    AluVM,              // Legacy contracts only
+    Rholang,            // Rholang-only execution
+    DualAnchor,         // Both systems, cryptographically linked
+}
+```
+
+**Execution Flow**:
+```
+RGB Contract Call
+    ↓
+HybridLedger.call()
+    ├─→ AluVM Path: Hypersonic → AluVM bytecode → RGB state
+    └─→ Rholang Path: Convert → F1r3fly gRPC → Rholang execution → RSpace++ state
+              ↓
+         Anchor Proof (links both executions cryptographically)
+```
+
+#### Confidence Levels for Integration
+
+| Component | Confidence | Notes |
+|-----------|-----------|-------|
+| Hook Point Identification | 9.5/10 ✅ | `Ledger.call()` is clear entry point |
+| Schema Understanding | 8/10 ✅ | Binary format, limited documentation |
+| AluVM Replacement Strategy | 7/10 ⚠️ | Requires state conversion logic |
+| Rholang Translation | 6/10 ⚠️ | Need RGB → Rholang compiler |
+| Anchor Proof System | 8/10 ✅ | Cryptographic linking feasible |
+| Backward Compatibility | 9/10 ✅ | Dual-mode execution preserves existing contracts |
+
+---
+
 ### Implementation Notes (Post-Implementation)
 
 **Initial API Limitation**: During initial implementation, we discovered that the `with_contract` method in `Contracts` struct was **private**, preventing access to `Contract::witnesses()` method.

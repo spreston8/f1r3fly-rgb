@@ -1,9 +1,11 @@
 # RGB Wallet - Complete Implementation Documentation
 
-**Last Updated:** October 13, 2025  
-**Version:** Phase 4B Complete
+**Last Updated:** October 28, 2025  
+**Version:** Post-Refactor (Ephemeral Runtime Architecture)
 
 This document provides a comprehensive overview of the RGB wallet implementation, including all features, technical details, and current state of the codebase.
+
+> **⚠️ Major Update (October 2025):** The wallet has undergone significant architectural changes, including a shift from cached runtimes to ephemeral runtimes (matching RGB CLI), modular code organization, and Firefly/RChain integration.
 
 ---
 
@@ -11,14 +13,16 @@ This document provides a comprehensive overview of the RGB wallet implementation
 
 1. [Overview](#overview)
 2. [Architecture](#architecture)
-3. [Backend Implementation (Rust)](#backend-implementation-rust)
-4. [Frontend Implementation (React/TypeScript)](#frontend-implementation-reacttypescript)
-5. [RGB Integration](#rgb-integration)
-6. [API Reference](#api-reference)
-7. [User Flows](#user-flows)
-8. [Technical Details](#technical-details)
-9. [Known Issues and Limitations](#known-issues-and-limitations)
-10. [Future Improvements](#future-improvements)
+3. [Configuration Management](#configuration-management)
+4. [Backend Implementation (Rust)](#backend-implementation-rust)
+5. [Frontend Implementation (React/TypeScript)](#frontend-implementation-reacttypescript)
+6. [RGB Integration](#rgb-integration)
+7. [Firefly/RChain Integration](#fireflyRChain-integration)
+8. [API Reference](#api-reference)
+9. [User Flows](#user-flows)
+10. [Technical Details](#technical-details)
+11. [Known Issues and Limitations](#known-issues-and-limitations)
+12. [Future Improvements](#future-improvements)
 
 ---
 
@@ -66,7 +70,12 @@ f1r3fly-rgb/
 ├── wallet/                    # Rust backend
 │   ├── src/
 │   │   ├── api/              # HTTP API handlers and routes
-│   │   ├── wallet/           # Core wallet logic
+│   │   ├── wallet/           # Core wallet logic (modular)
+│   │   │   ├── manager.rs    # Orchestration layer (548 lines)
+│   │   │   ├── *_ops.rs      # Operation modules
+│   │   │   └── shared/       # Shared utilities (11 modules)
+│   │   ├── firefly/          # Firefly/RChain integration
+│   │   ├── config.rs         # Environment-based configuration
 │   │   └── error.rs          # Error handling
 │   └── Cargo.toml
 │
@@ -97,12 +106,96 @@ API Client (Axios)
     ↓
 Axum Handlers (Rust)
     ↓
-WalletManager (Business Logic)
+WalletManager (Orchestration Layer)
     ↓
+├─→ Configuration (Environment Variables)
 ├─→ Storage (File System)
-├─→ RGB Runtime (RGB Contracts)
-├─→ Bitcoin Network (Mempool.space)
+├─→ RGB Runtime (Ephemeral per-operation)
+├─→ Firefly Client (gRPC/HTTP)
+├─→ Bitcoin Network (Esplora/Mempool.space)
 └─→ Esplora API (Balance Queries)
+```
+
+---
+
+## Configuration Management
+
+### Environment-Based Configuration
+
+The wallet uses `config.rs` for flexible, environment-based configuration supporting multiple deployment scenarios.
+
+**Configuration Structure:**
+```rust
+pub struct WalletConfig {
+    pub bitcoin_network: bitcoin::Network,      // Bitcoin network type
+    pub bpstd_network: bpstd::Network,          // BP-Std network type
+    pub esplora_url: String,                    // Esplora API endpoint
+    pub bitcoin_rpc_url: Option<String>,        // Optional Bitcoin Core RPC
+    pub public_url: String,                     // Public API URL for downloads
+    pub firefly_host: String,                   // Firefly node host
+    pub firefly_grpc_port: u16,                 // Firefly gRPC port
+    pub firefly_http_port: u16,                 // Firefly HTTP port
+}
+```
+
+### Environment Variables
+
+**Bitcoin Network:**
+- `BITCOIN_NETWORK` - "signet" (default) or "regtest"
+- `ESPLORA_URL` - Custom Esplora endpoint (optional)
+- `BITCOIN_RPC_URL` - Bitcoin Core RPC URL (optional)
+
+**Server Configuration:**
+- `BIND_ADDRESS` - Server bind address (default: "0.0.0.0:3000")
+- `PUBLIC_URL` - Public API URL for download links (default: "http://localhost:3000")
+- `ALLOWED_ORIGINS` - CORS allowed origins, comma-separated (optional)
+
+**Firefly Integration:**
+- `FIREFLY_HOST` - Firefly node host (default: "localhost")
+- `FIREFLY_GRPC_PORT` - Firefly gRPC port (default: 40401)
+- `FIREFLY_HTTP_PORT` - Firefly HTTP port (default: 40403)
+
+**Logging:**
+- `RUST_LOG` - Log level (info, debug, trace)
+
+### Usage Examples
+
+**Development (Signet):**
+```bash
+RUST_LOG=debug cargo run
+```
+
+**Local Regtest:**
+```bash
+BITCOIN_NETWORK=regtest \
+ESPLORA_URL=http://localhost:3000 \
+BIND_ADDRESS=127.0.0.1:3000 \
+cargo run
+```
+
+**Production Deployment:**
+```bash
+BITCOIN_NETWORK=signet \
+BIND_ADDRESS=0.0.0.0:3000 \
+PUBLIC_URL=https://api.example.com \
+ALLOWED_ORIGINS=https://app.example.com,https://preview.example.com \
+FIREFLY_HOST=firefly.example.com \
+RUST_LOG=info \
+cargo run --release
+```
+
+### CORS Configuration
+
+**Development Mode (Allow All):**
+```bash
+# No ALLOWED_ORIGINS set - allows any origin
+cargo run
+```
+
+**Production Mode (Restricted):**
+```bash
+# Whitelist specific origins
+ALLOWED_ORIGINS="https://app.vercel.app,https://preview.vercel.app" cargo run
 ```
 
 ---
@@ -116,19 +209,38 @@ wallet/src/
 ├── api/
 │   ├── handlers.rs          # HTTP request handlers
 │   ├── server.rs            # Axum server setup and routing
-│   └── types.rs             # API request/response types
+│   ├── types.rs             # API request/response types
+│   └── mod.rs               # API module exports
 │
 ├── wallet/
-│   ├── manager.rs           # Main wallet business logic (1275 lines)
-│   ├── storage.rs           # File-based wallet storage
-│   ├── balance.rs           # Balance checking and UTXO queries
-│   ├── address.rs           # BIP84 address derivation
-│   ├── transaction.rs       # Bitcoin transaction building
-│   ├── rgb.rs               # RGB asset management
-│   ├── rgb_runtime.rs       # RGB runtime initialization
-│   └── signer.rs            # PSBT signing implementation
+│   ├── manager.rs           # Orchestration layer (548 lines)
+│   ├── address_ops.rs       # Address operations
+│   ├── balance_ops.rs       # Balance queries (Bitcoin + RGB)
+│   ├── bitcoin_ops.rs       # Bitcoin transaction operations
+│   ├── rgb_consignment_ops.rs  # RGB consignment import/export
+│   ├── rgb_transfer_ops.rs  # RGB transfer operations
+│   ├── sync_ops.rs          # Wallet and RGB sync operations
+│   ├── wallet_ops.rs        # Wallet create/import/list
+│   ├── mod.rs               # Wallet module exports
+│   └── shared/              # Shared utilities
+│       ├── addresses.rs     # Address derivation utilities
+│       ├── balance.rs       # Balance data structures
+│       ├── keys.rs          # Key management utilities
+│       ├── rgb.rs           # RGB utilities and types
+│       ├── rgb_runtime.rs   # Ephemeral RGB runtime manager
+│       ├── signer.rs        # PSBT signing implementation
+│       ├── storage.rs       # File-based wallet storage
+│       ├── transaction.rs   # Transaction building utilities
+│       └── mod.rs           # Shared module exports
 │
+├── firefly/
+│   ├── client.rs            # Firefly gRPC client
+│   ├── types.rs             # Firefly type definitions
+│   └── mod.rs               # Firefly module exports
+│
+├── config.rs                # Environment-based configuration
 ├── error.rs                 # Unified error handling
+├── main.rs                  # Server entry point
 └── lib.rs                   # Library exports
 ```
 
@@ -136,74 +248,117 @@ wallet/src/
 
 #### 1. WalletManager (`wallet/src/wallet/manager.rs`)
 
-The core orchestrator that handles all wallet operations.
+**Pure orchestration layer** that delegates to specialized operation modules. Manager is now just 548 lines (down from 1,275).
 
-**Key Methods:**
+**Structure:**
+```rust
+pub struct WalletManager {
+    pub config: WalletConfig,
+    pub storage: Storage,
+    balance_checker: BalanceChecker,
+    rgb_runtime_manager: RgbRuntimeManager,  // Ephemeral runtime creator
+    pub firefly_client: Option<FireflyClient>,
+}
+```
+
+**Key Methods (Delegation Pattern):**
 
 ```rust
-// Wallet Management
+// Wallet Management (delegates to wallet_ops)
 pub fn create_wallet(&self, name: &str) -> Result<WalletInfo>
-pub fn import_wallet(&self, name: &str, mnemonic: &str) -> Result<WalletInfo>
+pub fn import_wallet(&self, name: &str, mnemonic: Mnemonic) -> Result<WalletInfo>
 pub fn list_wallets(&self) -> Result<Vec<WalletMetadata>>
 
-// Address & Balance
-pub async fn get_balance(&self, name: &str) -> Result<BalanceInfo>
+// Address Operations (delegates to address_ops)
+pub fn get_addresses(&self, name: &str, count: u32) -> Result<Vec<AddressInfo>>
 pub fn get_primary_address(&self, name: &str) -> Result<NextAddressInfo>
-pub async fn sync_wallet(&self, name: &str) -> Result<SyncResult>
-pub fn sync_rgb_runtime(&self, name: &str) -> Result<()>
 
-// Bitcoin Transactions
+// Balance & Sync (delegates to balance_ops and sync_ops)
+pub async fn get_balance(&self, name: &str) -> Result<BalanceInfo>
+pub async fn sync_wallet(&self, name: &str) -> Result<SyncResult>
+pub async fn sync_rgb_runtime(&self, name: &str) -> Result<()>
+
+// Bitcoin Transactions (delegates to bitcoin_ops)
 pub async fn send_bitcoin(&self, name: &str, request: SendBitcoinRequest) -> Result<SendBitcoinResponse>
 pub async fn create_utxo(&self, name: &str, request: CreateUtxoRequest) -> Result<CreateUtxoResult>
 pub async fn unlock_utxo(&self, name: &str, request: UnlockUtxoRequest) -> Result<UnlockUtxoResult>
 
-// RGB Operations
-pub async fn generate_rgb_invoice(&self, wallet_name: &str, request: GenerateInvoiceRequest) -> Result<GenerateInvoiceResult>
-pub fn send_transfer(&self, wallet_name: &str, invoice_str: &str, fee_rate_sat_vb: Option<u64>) -> Result<SendTransferResponse>
-pub async fn accept_consignment(&self, wallet_name: &str, consignment_data: &[u8]) -> Result<AcceptConsignmentResponse>
-pub async fn export_genesis_consignment(&self, wallet_name: &str, contract_id: &str) -> Result<ExportGenesisResponse>
+// RGB Operations (delegates to rgb_transfer_ops and rgb_consignment_ops)
+pub async fn issue_asset(&self, name: &str, request: IssueAssetRequest) -> Result<IssueAssetResponse>
+pub async fn generate_rgb_invoice(&self, name: &str, request: GenerateInvoiceRequest) -> Result<GenerateInvoiceResult>
+pub async fn send_transfer(&self, name: &str, invoice: &str, fee: Option<u64>) -> Result<SendTransferResponse>
+pub async fn accept_consignment(&self, name: &str, data: Vec<u8>) -> Result<AcceptConsignmentResponse>
+pub async fn export_genesis_consignment(&self, name: &str, contract_id: &str) -> Result<ExportGenesisResponse>
 ```
 
-**Runtime Management:**
+**Ephemeral Runtime Strategy:**
+- Each RGB operation creates a fresh runtime from disk
+- Performs operation and drops runtime
+- `FileHolder::drop()` auto-saves state to disk
+- No caching, no lifecycle management
+- Matches RGB CLI architecture (proven reliable)
 
+#### 2. Operation Modules
+
+The business logic is now split into focused operation modules:
+
+**Address Operations (`address_ops.rs`):**
 ```rust
-// Fast: No blockchain sync, uses cached state
-pub(crate) fn get_runtime_no_sync(&self, wallet_name: &str) -> Result<RgbpRuntimeDir>
-
-// Slow: Full blockchain sync with 32 confirmations (DEPRECATED for most operations)
-pub(crate) fn get_runtime(&self, wallet_name: &str) -> Result<RgbpRuntimeDir>
+pub fn get_addresses(storage: &Storage, wallet_name: &str, count: u32) -> Result<Vec<AddressInfo>>
+pub fn get_primary_address(storage: &Storage, wallet_name: &str) -> Result<NextAddressInfo>
 ```
 
-**Smart Sync Strategy:**
-- Balance queries use `get_runtime_no_sync()` for instant loading
-- After state-changing operations (transfers, issuance), frontend calls `sync_rgb_runtime()`
-- `sync_rgb_runtime()` uses 1 confirmation (fast) instead of 32 (slow)
-
-#### 2. RgbManager (`wallet/src/wallet/rgb.rs`)
-
-Handles RGB-specific operations.
-
-**Key Responsibilities:**
-- Check if UTXOs are occupied by RGB assets
-- Get bound assets for specific UTXOs
-- Issue RGB20 assets
-- Load RGB20 issuer schema from embedded bytes
-
-**Implementation Details:**
-
+**Balance Operations (`balance_ops.rs`):**
 ```rust
-pub fn check_utxo_occupied(&self, txid: bitcoin::Txid, vout: u32) -> Result<bool>
-pub fn get_bound_assets(&self, txid: bitcoin::Txid, vout: u32) -> Result<Vec<BoundAsset>>
-pub fn issue_rgb20_asset(&self, request: IssueAssetRequest) -> Result<IssueAssetResponse>
+// Async HTTP call for Bitcoin balance
+pub async fn get_bitcoin_balance(storage: &Storage, checker: &BalanceChecker, wallet_name: &str) -> Result<BalanceInfo>
+
+// Sync blocking call for RGB balance (uses ephemeral runtime)
+pub fn get_rgb_balance_sync(storage: &Storage, rgb_mgr: &RgbRuntimeManager, wallet_name: &str, utxos: &[UTXO]) -> Result<RgbBalanceData>
 ```
 
-**Asset Discovery:**
-Queries RGB contracts and extracts metadata from immutable state:
-- `ticker`: From contract state's "ticker" field
-- `name`: From contract state's "name" field or falls back to articles metadata
-- `amount`: From owned state assignments
+**Bitcoin Operations (`bitcoin_ops.rs`):**
+```rust
+pub async fn send_bitcoin(...) -> Result<SendBitcoinResponse>
+pub async fn create_utxo(...) -> Result<CreateUtxoResult>
+pub async fn unlock_utxo(...) -> Result<UnlockUtxoResult>
+```
 
-#### 3. Storage Layer (`wallet/src/wallet/storage.rs`)
+**RGB Transfer Operations (`rgb_transfer_ops.rs`):**
+```rust
+// Generate invoice (ephemeral runtime)
+pub fn generate_rgb_invoice_sync(...) -> Result<GenerateInvoiceResult>
+
+// Send transfer with 3-step process (matches RGB CLI)
+pub fn send_transfer(...) -> Result<SendTransferResponse>
+```
+
+**RGB Consignment Operations (`rgb_consignment_ops.rs`):**
+```rust
+// Accept genesis or transfer consignment
+pub fn accept_consignment(...) -> Result<AcceptConsignmentResponse>
+
+// Export genesis for same-wallet sync
+pub fn export_genesis_consignment(...) -> Result<ExportGenesisResponse>
+```
+
+**Sync Operations (`sync_ops.rs`):**
+```rust
+// Bitcoin wallet sync
+pub async fn sync_wallet(...) -> Result<SyncResult>
+
+// RGB runtime sync (ephemeral runtime with 1 confirmation)
+pub fn sync_rgb_runtime(...) -> Result<()>
+```
+
+**Wallet Operations (`wallet_ops.rs`):**
+```rust
+pub fn create_wallet(storage: &Storage, name: &str) -> Result<WalletInfo>
+pub fn import_wallet(storage: &Storage, name: &str, mnemonic: Mnemonic) -> Result<WalletInfo>
+pub fn list_wallets(storage: &Storage) -> Result<Vec<WalletMetadata>>
+```
+
+#### 3. Storage Layer (`wallet/src/wallet/shared/storage.rs`)
 
 File-based persistence for wallet data.
 
@@ -215,9 +370,16 @@ File-based persistence for wallet data.
 │   ├── mnemonic.txt         # BIP39 mnemonic (encrypted in production)
 │   ├── state.json           # Wallet state (used addresses, sync height)
 │   └── rgb/                 # RGB runtime data (managed by RGB library)
+│       ├── rgb_data/        # Per-wallet RGB state
+│       ├── stockpile/       # Contract state and history
+│       ├── stash/           # UTXO allocations
+│       └── indexer/         # Blockchain witness data
 │
 ├── consignments/            # Transfer consignment files
 │   └── transfer_<contract_id>_<timestamp>.rgbc
+│
+├── exports/                 # Genesis exports for wallet sync
+│   └── genesis_<contract_id>.rgbc
 │
 └── temp_consignments/       # Temporary import files
     └── accept_<uuid>.rgbc
@@ -229,10 +391,11 @@ File-based persistence for wallet data.
 pub struct WalletState {
     pub used_addresses: Vec<u32>,           // Address indices that received funds
     pub last_synced_height: Option<u64>,   // Last blockchain height synced
+    pub public_address_index: u32,          // Current public receive address
 }
 ```
 
-#### 4. Transaction Builder (`wallet/src/wallet/transaction.rs`)
+#### 4. Transaction Builder (`wallet/src/wallet/shared/transaction.rs`)
 
 Constructs Bitcoin transactions with proper fee estimation.
 
@@ -277,7 +440,7 @@ fn estimate_tx_size(&self, num_inputs: usize, num_outputs: usize) -> u64 {
 }
 ```
 
-#### 5. PSBT Signer (`wallet/src/wallet/signer.rs`)
+#### 5. PSBT Signer (`wallet/src/wallet/shared/signer.rs`)
 
 Implements `bpstd::psbt::Signer` for signing PSBTs used in RGB transfers.
 
@@ -511,139 +674,208 @@ let invoice = RgbInvoice::<rgb::ContractId>::from_str(invoice_str)?;
 
 ### RGB Runtime Initialization
 
-**Fast (No Sync):**
+**Ephemeral Runtime Pattern (Matches RGB CLI):**
+
+The wallet uses an ephemeral runtime approach where each operation creates a fresh runtime, uses it, and drops it:
+
 ```rust
-pub fn init_runtime_no_sync(&self, wallet_name: &str) -> Result<RgbpRuntimeDir> {
-    let wallet_dir = self.storage.wallet_dir(wallet_name);
-    let rgb_dir = wallet_dir.join("rgb");
-    
-    let runtime = RgbpRuntimeDir::load_or_create(
-        &rgb_dir,
-        Consensus::Bitcoin,
-        true,  // testnet
-        self.descriptor_str,
-        self.network,
-    )?;
-    
-    Ok(runtime)
+pub struct RgbRuntimeManager {
+    base_dir: PathBuf,
+    network: bpstd::Network,
+    esplora_url: String,
+}
+
+impl RgbRuntimeManager {
+    /// Create ephemeral runtime without blockchain sync
+    pub fn init_runtime_no_sync(&self, wallet_name: &str) -> Result<RgbpRuntimeDir> {
+        let wallet_dir = self.base_dir.join(wallet_name);
+        let rgb_dir = wallet_dir.join("rgb");
+        
+        // Load descriptor
+        let descriptor_str = std::fs::read_to_string(wallet_dir.join("descriptor.txt"))?;
+        let descriptor = RgbDescr::from_str(&descriptor_str)?;
+        
+        // Create runtime (loads existing state from disk)
+        let runtime = RgbpRuntimeDir::load_or_create(
+            &rgb_dir,
+            Consensus::Bitcoin,
+            true,  // testnet/signet
+            descriptor,
+            self.network,
+        )?;
+        
+        Ok(runtime)
+        // Runtime auto-saves on drop via FileHolder::drop()
+    }
 }
 ```
 
-**With Sync (Slow):**
+**Usage Pattern:**
 ```rust
-pub fn init_runtime(&self, wallet_name: &str) -> Result<RgbpRuntimeDir> {
-    let mut runtime = self.init_runtime_no_sync(wallet_name)?;
-    runtime.update(32)?;  // Full sync with 32 confirmations
-    Ok(runtime)
-}
+// 1. Create ephemeral runtime
+let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
+
+// 2. Sync if needed
+runtime.update(1)?;  // 1 confirmation for fast sync
+
+// 3. Perform operation
+let result = runtime.do_something()?;
+
+// 4. Runtime drops here → FileHolder::drop() auto-saves to disk
 ```
+
+**Why Ephemeral?**
+- ✅ Matches proven RGB CLI architecture
+- ✅ No stale cache issues - always fresh state
+- ✅ Simpler code - no locking/threading complexity
+- ✅ Automatic state persistence via drop
+- ✅ No manual shutdown needed
 
 ### RGB Transfer Process
 
-**Detailed Flow:**
+**3-Step Process (Matches RGB CLI):**
 
-1. **Invoice Parsing** (< 1ms)
-   ```rust
-   let invoice = RgbInvoice::<rgb::ContractId>::from_str(invoice_str)?;
-   ```
+#### Step 1: Create Payment
+```rust
+// Create ephemeral runtime
+let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
 
-2. **Payment Creation** (< 500ms)
-   ```rust
-   let (mut psbt, payment) = runtime.pay_invoice(
-       &invoice,
-       CoinselectStrategy::Aggregate,
-       tx_params,
-       None
-   )?;
-   ```
-   - Selects UTXOs with sufficient tokens
-   - Creates Bitcoin PSBT
-   - Commits RGB state transition using DBC
+// Sync RGB state BEFORE payment (UTXOs + witnesses)
+runtime.update(1)?;
 
-3. **Consignment Generation** (< 100ms)
-   ```rust
-   runtime.contracts.consign_to_file(
-       &consignment_path,
-       contract_id,
-       payment.terminals
-   )?;
-   ```
-   - Creates cryptographic proof
-   - Contains all history for recipient validation
+// Parse invoice
+let invoice = RgbInvoice::<rgb::ContractId>::from_str(invoice_str)?;
 
-4. **PSBT Signing** (< 50ms)
-   ```rust
-   let signer = WalletSigner::new(mnemonic, network);
-   psbt.sign(&signer)?;
-   psbt.finalize(runtime.wallet.descriptor());
-   ```
+// Create payment - returns PSBT and Payment
+let (psbt, payment) = runtime.pay_invoice(
+    &invoice,
+    CoinselectStrategy::Aggregate,
+    tx_params,
+    None
+)?;
 
-5. **Transaction Broadcast** (1-3s)
-   ```rust
-   let tx_hex = format!("{:x}", psbt.extract()?);
-   broadcast_to_mempool(&tx_hex)?;
-   ```
+// Generate consignment BEFORE signing
+runtime.contracts.consign_to_file(
+    &consignment_path,
+    contract_id,
+    payment.terminals
+)?;
 
-6. **State Update** (3-5s, async)
-   ```rust
-   runtime.update(1)?;  // Quick sync with 1 confirmation
-   ```
+// Extract psbt_meta for later use
+let psbt_meta = payment.psbt_meta.clone();
+```
+Runtime #1 drops here → Saves payment bundle to stockpile via `FileHolder::drop()`
+
+#### Step 2: Sign PSBT
+```rust
+// Sign WITHOUT runtime (pure cryptographic operation)
+let signer = WalletSigner::new(mnemonic, network);
+let signed_count = psbt.sign(&signer)?;
+```
+
+#### Step 3: Finalize & Broadcast
+```rust
+// Load descriptor for finalization
+let descriptor = RgbDescr::from_str(&descriptor_str)?;
+
+// Finalize PSBT (convert partial_sigs to final_witness)
+let finalized_count = psbt.finalize(&descriptor)?;
+
+// Extract signed transaction
+let tx = psbt.extract()?;
+
+// Broadcast via Esplora API (NOT via runtime.finalize())
+let tx_hex = format!("{:x}", tx);
+let response = client
+    .post(format!("{}/tx", esplora_url))
+    .header("Content-Type", "text/plain")
+    .body(tx_hex)
+    .send()?;
+```
+
+**Note:** The RGB CLI's `finalize` command does NOT use `runtime.finalize()` - it's commented out in `rgb/cli/src/exec.rs:552`. The wallet follows this proven pattern.
+
+**Why This Approach?**
+- ✅ Matches RGB CLI implementation (battle-tested)
+- ✅ Clear separation of concerns (payment → sign → broadcast)
+- ✅ Change UTXO discovered via `runtime.update()` on next balance query
+- ✅ No manual seal management needed
 
 ### Consignment Import
 
-**Accept Consignment Process:**
+**Accept Consignment Process (Ephemeral Runtime):**
 
 ```rust
-pub async fn accept_consignment(
-    &self,
+pub fn accept_consignment(
+    storage: &Storage,
+    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
-    consignment_data: &[u8],
+    consignment_bytes: Vec<u8>,
 ) -> Result<AcceptConsignmentResponse> {
     // 1. Save to temp file
     let temp_path = format!("./wallets/temp_consignments/accept_{}.rgbc", uuid);
-    std::fs::write(&temp_path, consignment_data)?;
+    std::fs::write(&temp_path, &consignment_bytes)?;
     
-    // 2. Get contracts before import
-    let contract_ids_before = runtime.contracts.contract_ids().collect();
+    // 2. Create ephemeral runtime
+    let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
     
-    // 3. Import consignment
-    runtime.consume_from_file(true, &temp_path, |_, _, _| Ok(()))?;
-    
-    // 4. Find new contract
-    let contract_ids_after = runtime.contracts.contract_ids().collect();
-    let new_contracts: Vec<_> = contract_ids_after
-        .difference(&contract_ids_before)
-        .collect();
-    
-    // 5. Determine contract ID (handles both new imports and re-imports)
-    let contract_id = if !new_contracts.is_empty() {
-        new_contracts.first().unwrap()
-    } else if contract_ids_after.len() == 1 {
-        contract_ids_after.iter().next().unwrap()  // Re-import case
-    } else {
-        return Err("Cannot determine which contract was updated");
-    };
-    
-    // 6. Query witness data to determine type
-    let witness_count = runtime.contracts.contract_witness_count(contract_id);
-    let (import_type, bitcoin_txid, status) = if witness_count == 0 {
-        ("genesis", None, "genesis_imported")
-    } else {
-        let witnesses = runtime.contracts.contract_witnesses(contract_id);
-        if let Some(last_witness) = witnesses.last() {
-            let txid = last_witness.id.to_string();
-            let status = match last_witness.status {
-                WitnessStatus::Genesis => "genesis_imported",
-                WitnessStatus::Offchain => "offchain",
-                WitnessStatus::Tentative => "pending",
-                WitnessStatus::Mined(_) => "confirmed",
-                WitnessStatus::Archived => "archived",
-            };
-            ("transfer", Some(txid), status)
+    {
+        // 3. Get contracts before import
+        let contract_ids_before: HashSet<String> = runtime.contracts
+            .contract_ids()
+            .map(|id| id.to_string())
+            .collect();
+        
+        // 4. Import consignment
+        runtime.consume_from_file(true, &temp_path, |_, _, _| Ok(()))?;
+        
+        // 5. Find new or updated contract
+        let contract_ids_after: HashSet<String> = runtime.contracts
+            .contract_ids()
+            .map(|id| id.to_string())
+            .collect();
+        
+        let new_contracts: Vec<_> = contract_ids_after
+            .difference(&contract_ids_before)
+            .collect();
+        
+        // Determine contract ID (handles both new imports and re-imports)
+        let contract_id_str = if !new_contracts.is_empty() {
+            new_contracts.first().unwrap().to_string()
+        } else if contract_ids_after.len() == 1 {
+            contract_ids_after.iter().next().unwrap().to_string()
         } else {
-            ("transfer", None, "imported")
-        }
-    };
+            return Err("Cannot determine which contract was updated");
+        };
+        
+        let contract_id = ContractId::from_str(&contract_id_str)?;
+        
+        // 6. Query witness data to determine import type
+        let witness_count = runtime.contracts.contract_witness_count(contract_id);
+        let (import_type, bitcoin_txid, status) = if witness_count == 0 {
+            ("genesis", None, "genesis_imported")
+        } else {
+            let witnesses: Vec<_> = runtime.contracts
+                .contract_witnesses(contract_id)
+                .collect();
+            if let Some(last_witness) = witnesses.last() {
+                let txid = last_witness.id.to_string();
+                let status = match last_witness.status {
+                    WitnessStatus::Genesis => "genesis_imported",
+                    WitnessStatus::Offchain => "offchain",
+                    WitnessStatus::Tentative => "pending",
+                    WitnessStatus::Mined(_) => "confirmed",
+                    WitnessStatus::Archived => "archived",
+                };
+                ("transfer", Some(txid), status)
+            } else {
+                ("transfer", None, "imported")
+            }
+        };
+        
+        (contract_id_str, import_type, bitcoin_txid, status)
+    }
+    // Runtime drops here → FileHolder::drop() auto-saves imported state
     
     // 7. Cleanup temp file
     std::fs::remove_file(&temp_path)?;
@@ -656,6 +888,165 @@ pub async fn accept_consignment(
     })
 }
 ```
+
+**Note:** We do NOT call `runtime.update()` after import. The consignment has been imported and saved to disk via `FileHolder::drop()`. The next operation that needs fresh state (like balance query) will call `update()`.
+
+---
+
+## Firefly/RChain Integration
+
+### Overview
+
+The wallet includes a Firefly client for deploying RGB contracts to the Rholang blockchain, enabling the RGB-Rholang bridge functionality.
+
+### Architecture
+
+```
+wallet/src/firefly/
+├── client.rs    # gRPC client for Firefly node
+├── types.rs     # Type definitions
+└── mod.rs       # Module exports
+```
+
+### FireflyClient
+
+**Structure:**
+```rust
+pub struct FireflyClient {
+    signing_key: SecretKey,      // For signing deployments
+    node_host: String,           // Firefly node host
+    grpc_port: u16,              // gRPC port (40401)
+}
+```
+
+**Key Methods:**
+
+```rust
+impl FireflyClient {
+    /// Create client with bootstrap validator key
+    pub fn new(host: &str, grpc_port: u16) -> Self
+    
+    /// Deploy Rholang code to blockchain
+    pub async fn deploy(&self, rholang_code: &str) -> Result<String, _>
+    
+    /// Propose block to confirm deployment
+    pub async fn propose(&self, deploy_id: &str) -> Result<String, _>
+    
+    /// Get current block number
+    pub async fn get_current_block_number(&self) -> Result<i64, _>
+    
+    /// Build signed deployment message
+    pub fn build_deploy_msg(
+        &self,
+        code: String,
+        phlo_limit: i64,
+        lang: String,
+        valid_after_block_number: i64,
+    ) -> DeployDataProto
+}
+```
+
+### Usage Example
+
+**Deploy RGB Contract to Rholang:**
+```rust
+// Initialize Firefly client from config
+let firefly_client = FireflyClient::new(
+    &config.firefly_host,
+    config.firefly_grpc_port,
+);
+
+// Prepare Rholang code
+let rholang_code = format!(
+    r#"
+    new contract in {{
+      contract!(
+        "rgb_contract",
+        "contract_id": "{}",
+        "ticker": "{}",
+        "supply": {}
+      )
+    }}
+    "#,
+    contract_id, ticker, supply
+);
+
+// Deploy to Firefly
+let deploy_id = firefly_client.deploy(&rholang_code).await?;
+log::info!("Deployed to Firefly: {}", deploy_id);
+
+// Propose block to confirm
+let block_hash = firefly_client.propose(&deploy_id).await?;
+log::info!("Block proposed: {}", block_hash);
+```
+
+### Configuration
+
+**Environment Variables:**
+- `FIREFLY_HOST` - Firefly node hostname (default: "localhost")
+- `FIREFLY_GRPC_PORT` - gRPC port for deploy/propose (default: 40401)
+- `FIREFLY_HTTP_PORT` - HTTP port for status/query (default: 40403)
+
+**Example:**
+```bash
+FIREFLY_HOST=firefly.example.com \
+FIREFLY_GRPC_PORT=40401 \
+FIREFLY_HTTP_PORT=40403 \
+cargo run
+```
+
+### Security Considerations
+
+⚠️ **Current Implementation:**
+- Uses hardcoded bootstrap validator private key for testing
+- Key: `5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657`
+
+⚠️ **Production Requirements:**
+1. Move private key to environment variable or secure key store
+2. Implement key rotation mechanism
+3. Add proper authentication/authorization
+4. Use per-user signing keys instead of shared validator key
+
+**Recommended:**
+```bash
+export FIREFLY_PRIVATE_KEY="your_secure_key_here"
+```
+
+### API Status Endpoint
+
+The wallet exposes Firefly node status via HTTP:
+
+```http
+GET /api/firefly/status
+
+Response:
+{
+  "status": "connected",
+  "node_url": "http://localhost:40403",
+  "current_block": 12345
+}
+```
+
+### Dependencies
+
+```toml
+[dependencies]
+# Firefly/RChain integration
+secp256k1 = { version = "0.28.0", features = ["rand-std"] }
+blake2 = "0.10.6"
+typenum = "1.16.0"
+prost = "0.13.5"
+f1r3fly-models = "0.1.0"
+hex = "0.4.3"
+```
+
+### Future Enhancements
+
+1. **Contract Verification** - Verify RGB contracts on-chain
+2. **State Queries** - Query contract state from Rholang
+3. **Event Listeners** - Subscribe to Rholang events
+4. **Multi-Signature** - Support multi-sig deployments
+5. **Gas Optimization** - Optimize phlo usage for deployments
 
 ---
 
@@ -1098,39 +1489,62 @@ Recipient validates by:
 
 ### Sync Strategies
 
-**Problem:** RGB runtime needs blockchain data, but full sync takes 20-30 seconds.
+**Ephemeral Runtime Approach:**
 
-**Solution: Tiered Sync Strategy**
+The wallet creates fresh runtimes for each operation and syncs on-demand:
 
-1. **No Sync (Instant - < 100ms):**
-   ```rust
-   let runtime = get_runtime_no_sync(wallet_name)?;
-   ```
-   - Uses cached state
-   - Perfect for read operations
-   - Used by: balance queries, asset lists
+**1. Load from Disk (Fast - < 100ms):**
+```rust
+// Create runtime - loads existing state from disk
+let runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
+```
+- Loads stockpile/stash/indexer from disk
+- No blockchain queries
+- State may be slightly stale
+- Used when: Initial runtime creation
 
-2. **Quick Sync (Fast - 3-5s):**
-   ```rust
-   runtime.update(1)?;  // 1 confirmation requirement
-   ```
-   - Scans recent blocks only
-   - Good enough for recent transactions
-   - Used by: explicit sync after transfers
+**2. Sync Before Operation (Adaptive - 3-10s):**
+```rust
+// Sync with 1 confirmation (fast)
+runtime.update(1)?;
+```
+- Queries Esplora for recent blocks
+- Updates UTXO set and witness status
+- Scans from last known block height
+- Used when: Before transfers, before balance queries
 
-3. **Full Sync (Slow - 20-30s):**
-   ```rust
-   runtime.update(32)?;  // 32 confirmation requirement
-   ```
-   - Scans entire blockchain
-   - Maximum security
-   - **DEPRECATED** - not used in current implementation
+**3. Explicit User Sync:**
+```rust
+// User-triggered sync via "Sync" button
+pub async fn sync_rgb_runtime(&self, wallet_name: &str) -> Result<()> {
+    let mut runtime = self.rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
+    runtime.update(1)?;
+    Ok(())
+    // Runtime drops → saves updated state
+}
+```
 
 **When Syncs Happen:**
-- ✅ After user sends transfer (frontend triggers background sync)
+- ✅ Before creating RGB transfers (ensures fresh UTXO set)
+- ✅ During balance queries (gets latest allocations)
 - ✅ When user clicks "Sync" button
-- ✅ Before generating invoice if no UTXOs found
-- ❌ NOT on every balance query (too slow)
+- ✅ After accepting consignments (implicit on next balance query)
+- ✅ After issuing assets (implicit on next balance query)
+
+**Why 1 Confirmation?**
+- Fast enough for good UX (3-5 seconds)
+- Sufficient for testnet/signet
+- Production mainnet may want 6+ confirmations
+- Configurable via `runtime.update(confirmations)`
+
+**Auto-Save on Drop:**
+```rust
+{
+    let mut runtime = create_runtime()?;
+    runtime.update(1)?;
+    runtime.do_operation()?;
+} // Runtime drops here → FileHolder::drop() auto-saves to disk
+```
 
 ### UTXO Selection
 
@@ -1222,21 +1636,37 @@ impl IntoResponse for WalletError {
    - No list of past transfers
    - Future: Add transaction history view
 
-6. **Signet Only**
-   - Currently configured for Bitcoin Signet testnet
+6. **Network Configuration**
+   - ✅ Now supports Signet and Regtest via environment variables
    - Mainnet support requires:
-     - Change network constants
-     - Update Esplora API URLs
-     - Increase confirmation requirements
-     - Add additional safety checks
+     - Set `BITCOIN_NETWORK=bitcoin` (infrastructure ready)
+     - Configure mainnet Esplora URL
+     - Increase confirmation requirements to 6+
+     - Additional security audit
 
-7. **No Fee Estimation**
+7. **No Dynamic Fee Estimation**
    - Uses fixed estimates (250 sats for RGB, calculated for Bitcoin)
    - Future: Query mempool for dynamic fees
 
 8. **Limited Error Recovery**
    - If transfer fails after broadcast, need manual recovery
    - Future: Add transaction rebroadcast and CPFP
+
+9. **Ephemeral Runtime Performance** (New in October 2025)
+   - Each operation creates fresh runtime from disk
+   - May be slower than cached approach for rapid operations
+   - Trade-off: Simplicity and reliability vs potential performance
+   - Needs benchmarking against previous cached approach
+
+10. **Orphaned Code** (New in October 2025)
+   - Files `rgb_runtime_cache.rs` and `rgb_lifecycle.rs` exist but unused
+   - Should be removed or marked deprecated
+   - Total ~20KB of dead code
+
+11. **Firefly Security** (New in October 2025)
+   - Bootstrap private key hardcoded in source
+   - OK for testing, **MUST** move to env var for production
+   - Key: `5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657`
 
 ### Edge Cases Handled
 
@@ -1270,28 +1700,69 @@ impl IntoResponse for WalletError {
    - **MUST** encrypt before production
    - Consider hardware wallet integration
 
-2. **Key Derivation:**
+2. **Firefly Private Key:** (New in October 2025)
+   - Currently hardcoded in `firefly/client.rs`
+   - **MUST** move to environment variable or key store
+   - Recommendation: `export FIREFLY_PRIVATE_KEY="..."`
+   - Consider per-user signing keys instead of shared validator key
+
+3. **Key Derivation:**
    - Uses BIP39/BIP32/BIP84 correctly
    - Seeds should never be logged
+   - ✅ Fixed BIP32 path bug (October 2025)
 
-3. **Network Security:**
-   - All API calls over HTTP (localhost)
+4. **Network Security:**
+   - ✅ CORS now configurable via `ALLOWED_ORIGINS` env var
+   - ✅ Server bind address configurable via `BIND_ADDRESS`
+   - ✅ Public URL configurable for download links
    - **MUST** use HTTPS in production
-   - Add authentication/authorization
+   - **MUST** add authentication/authorization
 
-4. **Input Validation:**
+5. **Input Validation:**
    - Validates addresses, amounts, fee rates
    - Sanitizes file uploads
    - Prevents path traversal in file operations
 
-5. **Confirmation Requirements:**
-   - Currently 1 confirmation for quick testing
+6. **Confirmation Requirements:**
+   - Currently 1 confirmation for quick testing/signet
    - **MUST** increase to 6+ for mainnet
-   - Consider user-configurable settings
+   - Configurable via `runtime.update(confirmations)`
 
 ---
 
 ## Future Improvements
+
+### Immediate Actions (Post-Refactor Cleanup)
+
+1. **Remove Orphaned Code**
+   - Delete `wallet/src/wallet/shared/rgb_runtime_cache.rs` (~13KB)
+   - Delete `wallet/src/wallet/shared/rgb_lifecycle.rs` (~7KB)
+   - Or mark with `#[deprecated]` attribute if keeping for reference
+   - Update mod.rs to remove imports
+
+2. **Security Hardening**
+   - Move Firefly private key to `FIREFLY_PRIVATE_KEY` env var
+   - Implement mnemonic encryption at rest
+   - Add rate limiting to API endpoints
+   - Document HTTPS setup for production
+
+3. **Performance Benchmarking**
+   - Benchmark ephemeral vs previous cached approach
+   - Measure balance query latency
+   - Test rapid consecutive transfers
+   - Optimize if needed (consider read-only cache)
+
+4. **Integration Testing**
+   - Add end-to-end transfer tests on regtest
+   - Test multi-wallet scenarios
+   - Test error recovery paths
+   - Firefly deployment testing
+
+5. **Documentation Updates**
+   - ✅ Update main implementation docs (this file)
+   - Add deployment guide (Docker, AWS, Vercel)
+   - Document environment variables
+   - Add troubleshooting guide
 
 ### Short Term (Phase 5)
 
@@ -1369,40 +1840,72 @@ impl IntoResponse for WalletError {
 
 ## Conclusion
 
-The RGB wallet implementation is a **production-ready foundation** for Bitcoin and RGB asset management. It demonstrates:
+The RGB wallet implementation is a **production-ready foundation** for Bitcoin and RGB asset management with recent architectural improvements. It demonstrates:
 
 ✅ Full RGB 0.12 integration with native invoice support  
+✅ Ephemeral runtime pattern matching RGB CLI (proven reliable)  
 ✅ Complete Bitcoin wallet functionality  
-✅ Smart caching and sync strategies for performance  
-✅ Clean separation of concerns (storage, business logic, API, UI)  
+✅ Modular architecture with clear separation of concerns  
+✅ Environment-based configuration for flexible deployment  
+✅ Firefly/RChain integration for RGB-Rholang bridge  
 ✅ Comprehensive error handling and user feedback  
 ✅ Extensible architecture for future features  
 
 **Current State:**
-- **Backend:** 1,275 lines of Rust (manager.rs) + supporting modules
+- **Backend:** ~6,017 total lines across 31 Rust files
+  - Manager: 548 lines (orchestration only)
+  - Operation modules: 7 focused modules
+  - Shared utilities: 11 modules
 - **Frontend:** 459 lines (WalletDetail.tsx) + 8 modal components
 - **RGB Modifications:** 3 new methods in rgb-std contracts.rs
-- **API Endpoints:** 18 endpoints covering all operations
-- **Test Network:** Fully functional on Bitcoin Signet
+- **API Endpoints:** 18+ endpoints covering all operations
+- **Test Networks:** Fully functional on Bitcoin Signet and Regtest
+
+**Architecture Highlights:**
+- ✅ **Ephemeral Runtimes** - Each operation creates fresh runtime, no caching complexity
+- ✅ **Modular Design** - Clear separation: wallet_ops, bitcoin_ops, rgb_transfer_ops, etc.
+- ✅ **Configuration Management** - Environment-based config for deployment flexibility
+- ✅ **Firefly Integration** - Deploy RGB contracts to Rholang blockchain
+- ✅ **Network Abstraction** - Support for Signet, Regtest, and future Mainnet
 
 **Ready For:**
-- ✅ RGB20 token operations
-- ✅ Bitcoin transactions
+- ✅ RGB20 token operations on Signet/Regtest
+- ✅ Bitcoin transactions with proper fee estimation
 - ✅ Multi-wallet management
 - ✅ Same-wallet sync across devices
 - ✅ End-to-end transfers with consignments
+- ✅ Firefly/RChain deployments (testing)
+- ✅ Cloud deployment (AWS, Docker, Vercel, etc.)
 
 **Requires Before Mainnet:**
-- ⚠️ Mnemonic encryption
-- ⚠️ HTTPS and authentication
-- ⚠️ Increased confirmation requirements
-- ⚠️ Dynamic fee estimation
-- ⚠️ Comprehensive testing on mainnet testnet
+- ⚠️ **Security:** Mnemonic encryption in storage
+- ⚠️ **Security:** Move Firefly private key to env var/key store
+- ⚠️ **Network:** HTTPS and proper authentication
+- ⚠️ **RGB:** Increase confirmation requirements (6+ for mainnet)
+- ⚠️ **Bitcoin:** Dynamic fee estimation from mempool
+- ⚠️ **Testing:** Comprehensive integration tests on mainnet
+- ⚠️ **Performance:** Benchmark ephemeral vs cached runtime approach
+- ⚠️ **Cleanup:** Remove unused rgb_runtime_cache.rs and rgb_lifecycle.rs files
+
+**Recent Changes (October 2025):**
+- 🔄 **Architecture:** Shifted from cached runtimes to ephemeral pattern
+- 📦 **Modular Code:** Refactored manager.rs (1,275 → 548 lines) into focused modules
+- ⚙️ **Configuration:** Added environment-based config with CORS, bind address, public URL
+- 🔥 **Firefly:** Integrated Firefly/RChain gRPC client for deploying contracts
+- 🐛 **Bug Fixes:** Fixed BIP32 derivation path, balance query logic, download URLs
+- 🧪 **Testing:** Added integration tests for RGB transfers
+
+**Next Steps:**
+1. Remove orphaned cache/lifecycle files
+2. Move Firefly private key to environment variable
+3. Run performance benchmarks (ephemeral vs cached)
+4. Add comprehensive integration tests
+5. Security audit for production readiness
 
 ---
 
-**Documentation Version:** 1.0  
-**Last Updated:** October 13, 2025  
+**Documentation Version:** 2.0 (Post-Refactor)  
+**Last Updated:** October 28, 2025  
 **Author:** Development Team  
 **License:** See project LICENSE file
 
