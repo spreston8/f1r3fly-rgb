@@ -1,280 +1,193 @@
-use blake2::{Blake2b, Digest};
-use f1r3fly_models::casper::v1::deploy_response::Message as DeployResponseMessage;
-use f1r3fly_models::casper::v1::deploy_service_client::DeployServiceClient;
-use f1r3fly_models::casper::{BlocksQuery, DeployDataProto, LightBlockInfo};
-use f1r3fly_models::ByteString;
-use prost::Message;
-use secp256k1::{Message as Secp256k1Message, Secp256k1, SecretKey};
-use std::time::{SystemTime, UNIX_EPOCH};
-use typenum::U32;
-
+use node_cli::f1r3fly_api::F1r3flyApi;
 use crate::firefly::types::*;
+use crate::firefly::helpers::convert_rholang_to_json;
 
-/// Bootstrap private key from standalone.yml
-/// validator-private-key: 5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657
-/// TODO: Move to env
-const BOOTSTRAP_PRIVATE_KEY: &str =
-    "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657";
+/// RGB storage contract URIs
+/// These are obtained from deploying rgb_state_storage.rho
+#[derive(Debug, Clone)]
+pub struct RgbStorageUris {
+    pub store_contract: String,
+    pub get_contract: String,
+    pub search_by_ticker: String,
+    pub store_allocation: String,
+    pub get_allocation: String,
+    pub record_transition: String,
+    pub get_transition: String,
+}
 
+/// FireflyClient wraps the F1r3flyApi from rust-client and adds RGB-specific methods
+/// 
+/// Note: We store the connection parameters and create F1r3flyApi instances on-demand
+/// to avoid lifetime issues without leaking memory.
+#[derive(Clone)]
 pub struct FireflyClient {
-    signing_key: SecretKey,
-    node_host: String,
-    grpc_port: u16,
-    http_port: u16,
+    pub node_host: String,
+    pub grpc_port: u16,
+    pub http_port: u16,
+    signing_key: String,
+    rgb_uris: Option<RgbStorageUris>,
 }
 
 impl FireflyClient {
     pub fn new(host: &str, grpc_port: u16, http_port: u16) -> Self {
-        let signing_key = SecretKey::from_slice(
-            &hex::decode(BOOTSTRAP_PRIVATE_KEY).expect("Failed to decode bootstrap private key"),
-        )
-        .expect("Invalid bootstrap private key");
-
+        // Load private key from environment, fallback to default bootstrap key
+        let signing_key = std::env::var("FIREFLY_PRIVATE_KEY")
+            .unwrap_or_else(|_| {
+                log::warn!("FIREFLY_PRIVATE_KEY not set, using default bootstrap key");
+                "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657".to_string()
+            });
+        
         Self {
-            signing_key,
             node_host: host.to_string(),
             grpc_port,
             http_port,
+            signing_key,
+            rgb_uris: None,
         }
     }
+    
+    /// Set RGB storage contract URIs
+    /// Call this after deploying rgb_state_storage.rho to enable RGB operations
+    pub fn set_rgb_uris(&mut self, uris: RgbStorageUris) {
+        self.rgb_uris = Some(uris);
+    }
+    
+    /// Get RGB storage URIs (returns error if not set)
+    fn get_rgb_uris(&self) -> Result<&RgbStorageUris, Box<dyn std::error::Error>> {
+        self.rgb_uris.as_ref()
+            .ok_or_else(|| "RGB storage URIs not set. Call set_rgb_uris() first.".into())
+    }
+    
+    /// Create an F1r3flyApi instance for this operation
+    /// This is cheap since F1r3flyApi just holds references and a SecretKey
+    pub fn api(&self) -> F1r3flyApi {
+        F1r3flyApi::new(&self.signing_key, &self.node_host, self.grpc_port)
+    }
+
+    // ============================================================================
+    // Core F1r3fly Operations (delegated to F1r3flyApi)
+    // ============================================================================
 
     /// Deploy Rholang code (writes to blockchain)
+    /// Delegates to F1r3flyApi which handles VABN and Block 50 issues automatically
     pub async fn deploy(&self, rholang_code: &str) -> Result<String, Box<dyn std::error::Error>> {
-        // Get current block number for validity window
-        let current_block = match self.get_current_block_number().await {
-            Ok(block_num) => {
-                log::debug!("Current Firefly block: {}", block_num);
-                block_num
-            }
-            Err(e) => {
-                log::warn!("Could not get current block number ({}), using VABN=0", e);
-                0
-            }
-        };
-
-        // Build and sign the deployment
-        let deployment = self.build_deploy_msg(
-            rholang_code.to_string(),
-            5_000_000_000, // Large phlo limit for contracts
-            "rholang".to_string(),
-            current_block,
-        );
-
-        // Connect to the F1r3fly node via gRPC
-        let mut deploy_service_client =
-            DeployServiceClient::connect(format!("http://{}:{}/", self.node_host, self.grpc_port))
-                .await?;
-
-        // Send the deploy
-        let deploy_response = deploy_service_client.do_deploy(deployment).await?;
-
-        // Process the response
-        let deploy_message = deploy_response
-            .get_ref()
-            .message
-            .as_ref()
-            .ok_or("Deploy result not found")?;
-
-        match deploy_message {
-            DeployResponseMessage::Error(service_error) => Err(service_error.clone().into()),
-            DeployResponseMessage::Result(result) => {
-                // Extract the deploy ID from the response
-                let cleaned_result = result.trim();
-
-                if let Some(deploy_id) = cleaned_result.strip_prefix("Success! DeployId is: ") {
-                    Ok(deploy_id.trim().to_string())
-                } else if let Some(deploy_id) =
-                    cleaned_result.strip_prefix("Success!\nDeployId is: ")
-                {
-                    Ok(deploy_id.trim().to_string())
-                } else if cleaned_result.starts_with("Success!") {
-                    // Look for any long hex string in the response
-                    let lines: Vec<&str> = cleaned_result.lines().collect();
-                    for line in lines {
-                        let trimmed = line.trim();
-                        if trimmed.len() > 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-                            return Ok(trimmed.to_string());
-                        }
-                    }
-                    Err(format!("Could not extract deploy ID from response: {}", result).into())
-                } else {
-                    Ok(cleaned_result.to_string())
-                }
-            }
-        }
+        // Use 500,000 phlo - enough for complex contracts like RGB storage with insertSigned
+        // 50,000 is too low (OutOfPhlogistonsError), 5 billion causes contracts not to execute
+        self.api().deploy_with_phlo_limit(rholang_code, 500_000, "rholang").await
+    }
+    
+    /// Deploy Rholang code with a specific timestamp (for insertSigned compatibility)
+    /// This is CRITICAL for insertSigned to work - the deploy timestamp must match the signature timestamp
+    /// 
+    /// The Scala version of insertSigned verifies: blake2b256((timestamp, deployerPubKey, version))
+    /// where timestamp comes from rho:deploy:data, so we MUST deploy with the same timestamp we signed
+    pub async fn deploy_with_timestamp(&self, rholang_code: &str, timestamp_millis: i64) -> Result<String, Box<dyn std::error::Error>> {
+        // Use custom phlo limit and pass the timestamp through
+        self.api().deploy_with_timestamp_and_phlo_limit(rholang_code, "rholang", Some(timestamp_millis), 500_000).await
     }
 
-    /// Wait for deploy to be included in a block
+    /// Wait for a deploy to be included in a block
+    /// Returns the block hash once the deploy is found
+    /// Uses rust-client's get_deploy_block_hash pattern
     pub async fn wait_for_deploy(
         &self,
         deploy_id: &str,
         max_attempts: u32,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let check_interval_sec = 1;
+        let api = self.api();
+        
         for attempt in 1..=max_attempts {
-            let response = reqwest::Client::new()
-                .get(&format!(
-                    "http://{}:40403/api/deploy/{}",
-                    self.node_host, deploy_id
-                ))
-                .send()
-                .await;
-
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    let deploy_info: serde_json::Value = resp.json().await?;
-                    if let Some(block_hash) = deploy_info.get("blockHash").and_then(|v| v.as_str())
-                    {
-                        return Ok(block_hash.to_string());
+            // Use rust-client's get_deploy_block_hash method
+            let result = api.get_deploy_block_hash(deploy_id, self.http_port).await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                })?;
+            
+            match result {
+                Some(block_hash) => {
+                    log::debug!("Deploy {} found in block {} after {} attempts", 
+                        deploy_id, block_hash, attempt);
+                    return Ok(block_hash);
+                }
+                None => {
+                    if attempt >= max_attempts {
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("Deploy not included in block after {} attempts", max_attempts)
+                        )));
                     }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(check_interval_sec)).await;
                 }
-                _ => {
-                    // Deploy not yet included, continue waiting
-                }
-            }
-
-            if attempt < max_attempts {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         }
 
-        Err("Deploy not included in block after max attempts".into())
+        Err(Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "Deploy wait timeout")))
     }
 
-    /// Gets the current block number from the blockchain
-    async fn get_current_block_number(&self) -> Result<i64, Box<dyn std::error::Error>> {
-        // Get the most recent block using show_main_chain with depth 1
-        let blocks = self.show_main_chain(1).await?;
-
-        if let Some(latest_block) = blocks.first() {
-            Ok(latest_block.block_number)
-        } else {
-            // Fallback to 0 if no blocks found (genesis case)
-            Ok(0)
-        }
-    }
-
-    /// Gets blocks in the main chain
-    async fn show_main_chain(
+    /// Wait for a specific block to be finalized
+    /// Uses rust-client's is_finalized method via gRPC
+    pub async fn wait_for_block_finalization(
         &self,
-        depth: u32,
-    ) -> Result<Vec<LightBlockInfo>, Box<dyn std::error::Error>> {
-        use f1r3fly_models::casper::v1::block_info_response::Message;
-
-        // Connect to the F1r3fly node
-        let mut deploy_service_client =
-            DeployServiceClient::connect(format!("http://{}:{}/", self.node_host, self.grpc_port))
-                .await?;
-
-        // Create the query
-        let query = BlocksQuery {
-            depth: depth as i32,
-        };
-
-        // Send the query and collect streaming response
-        let mut stream = deploy_service_client
-            .show_main_chain(query)
-            .await?
-            .into_inner();
-
-        let mut blocks = Vec::new();
-        while let Some(response) = stream.message().await? {
-            if let Some(message) = response.message {
-                match message {
-                    Message::Error(service_error) => {
-                        return Err(
-                            format!("gRPC Error: {}", service_error.messages.join("; ")).into()
-                        );
-                    }
-                    Message::BlockInfo(block_info) => {
-                        blocks.push(block_info);
-                    }
-                }
-            }
+        target_block_hash: &str,
+        max_attempts: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Use rust-client's is_finalized method (gRPC-based)
+        // Default retry delay of 5 seconds (same as rust-client deploy_and_wait)
+        let retry_delay_sec = 5;
+        let api = self.api();
+        
+        match api.is_finalized(target_block_hash, max_attempts, retry_delay_sec).await? {
+            true => Ok(()),
+            false => Err(format!(
+                "Block {} not finalized after {} attempts",
+                target_block_hash, max_attempts
+            )
+            .into()),
         }
-
-        Ok(blocks)
     }
 
-    /// Builds and signs a deploy message
-    ///
-    /// This follows the exact same signing process as rust-client:
-    /// 1. Create DeployDataProto with deployment parameters
-    /// 2. Serialize it (excluding language, sig, deployer, sig_algorithm fields)
-    /// 3. Hash with Blake2b-256
-    /// 4. Sign with secp256k1 using the bootstrap private key
-    /// 5. Add the signature and public key to the complete DeployDataProto
-    fn build_deploy_msg(
+    /// Deploy Rholang code and wait for it to be finalized
+    /// This is the recommended method for deploying RGB state that needs to be queried
+    /// Follows the rust-client deploy_and_wait pattern:
+    /// 1. Deploy code
+    /// 2. Wait for deploy to be included in a block
+    /// 3. Wait for block to be finalized
+    pub async fn deploy_and_wait_for_finalization(
         &self,
-        code: String,
-        phlo_limit: i64,
-        language: String,
-        valid_after_block_number: i64,
-    ) -> DeployDataProto {
-        // Get current timestamp in milliseconds
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Failed to get system time")
-            .as_millis() as i64;
-
-        // Create a projection with only the fields used for signature calculation
-        // IMPORTANT: The language field is deliberately excluded from signature calculation
-        let projection = DeployDataProto {
-            term: code.clone(),
-            timestamp,
-            phlo_price: 1,
-            phlo_limit,
-            valid_after_block_number,
-            shard_id: "root".into(),
-            language: String::new(), // Excluded from signature calculation
-            sig: ByteString::new(),
-            deployer: ByteString::new(),
-            sig_algorithm: String::new(),
-        };
-
-        // Serialize the projection for hashing
-        let serialized = projection.encode_to_vec();
-
-        // Hash with Blake2b256
-        let digest = blake2b_256_hash(&serialized);
-
-        // Sign the digest with secp256k1
-        let secp = Secp256k1::new();
-        let message = Secp256k1Message::from_digest(digest.into());
-        let signature = secp.sign_ecdsa(&message, &self.signing_key);
-
-        // Get signature in DER format
-        let sig_bytes = signature.serialize_der().to_vec();
-
-        // Get the public key in uncompressed format
-        let public_key = self.signing_key.public_key(&secp);
-        let pub_key_bytes = public_key.serialize_uncompressed().to_vec();
-
-        // Return the complete deploy message
-        DeployDataProto {
-            term: code,
-            timestamp,
-            phlo_price: 1,
-            phlo_limit,
-            valid_after_block_number,
-            shard_id: "root".into(),
-            language,
-            sig: ByteString::from(sig_bytes),
-            sig_algorithm: "secp256k1".into(),
-            deployer: ByteString::from(pub_key_bytes),
-        }
+        rholang_code: &str,
+        max_block_wait_attempts: u32,
+        max_finalization_attempts: u32,
+    ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+        // Step 1: Deploy the code
+        let deploy_id = self.deploy(rholang_code).await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
+        
+        // Step 2: Wait for deploy to be included in a block
+        let block_hash = self.wait_for_deploy(&deploy_id, max_block_wait_attempts).await?;
+        
+        // Step 3: Wait for block to be finalized
+        self.wait_for_block_finalization(&block_hash, max_finalization_attempts).await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
+        
+        Ok((deploy_id, block_hash))
     }
 
     // ============================================================================
-    // HTTP API Query Methods for RSpace++ State Storage
+    // RGB State Storage Operations (RGB-specific, kept in wallet)
     // ============================================================================
 
-    /// Query RSpace++ state using exploratory deploy
-    /// This method uses the F1r3node HTTP API to execute Rholang queries without committing to blockchain
+    /// Query RSpace state using exploratory deploy (read-only)
     pub async fn query_state(&self, query_code: &str) -> Result<String, Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
         
+        // Use /api/explore-deploy endpoint with query_code as JSON string
         let response = client
-            .post(&format!("http://{}:{}/explore-deploy", self.node_host, self.http_port))
+            .post(&format!("http://{}:{}/api/explore-deploy", &self.node_host, self.http_port))
             .header("Content-Type", "application/json")
             .json(&query_code)
             .send()
@@ -282,7 +195,19 @@ impl FireflyClient {
         
         if response.status().is_success() {
             let result: serde_json::Value = response.json().await?;
-            Ok(serde_json::to_string(&result)?)
+            
+            // Extract the expr array from the response
+            if let Some(expr_array) = result.get("expr") {
+                if let Some(expr_list) = expr_array.as_array() {
+                    if !expr_list.is_empty() {
+                        // Return the first expression result
+                        return Ok(serde_json::to_string(&expr_list[0])?);
+                    }
+                }
+            }
+            
+            // If no expr data, return empty object
+            Ok("{}".to_string())
         } else {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
@@ -290,102 +215,45 @@ impl FireflyClient {
         }
     }
 
-    /// Query specific allocation data using GetAllocation contract
-    pub async fn query_allocation(
-        &self,
-        contract_id: &str,
-        utxo: &str,
-    ) -> Result<AllocationData, Box<dyn std::error::Error>> {
-        let query_code = format!(
-            r#"
-            new return in {{
-              @"GetAllocation"!("{}", "{}", *return) |
-              for(@result <- return) {{
-                return!(result)
-              }}
-            }}
-            "#,
-            contract_id, utxo
-        );
-        
-        let result = self.query_state(&query_code).await?;
-        let allocation: AllocationData = serde_json::from_str(&result)?;
-        Ok(allocation)
-    }
-
-    /// Query contract metadata using GetContract contract
-    pub async fn query_contract(
-        &self,
-        contract_id: &str,
-    ) -> Result<ContractData, Box<dyn std::error::Error>> {
-        let query_code = format!(
-            r#"
-            new return in {{
-              @"GetContract"!("{}", *return) |
-              for(@result <- return) {{
-                return!(result)
-              }}
-            }}
-            "#,
-            contract_id
-        );
-        
-        let result = self.query_state(&query_code).await?;
-        let contract: ContractData = serde_json::from_str(&result)?;
-        Ok(contract)
-    }
-
-    /// Search contracts by ticker using SearchContractByTicker contract
-    pub async fn search_contract_by_ticker(
-        &self,
-        ticker: &str,
-    ) -> Result<ContractSearchResult, Box<dyn std::error::Error>> {
-        let query_code = format!(
-            r#"
-            new return in {{
-              @"SearchContractByTicker"!("{}", *return) |
-              for(@result <- return) {{
-                return!(result)
-              }}
-            }}
-            "#,
-            ticker
-        );
-        
-        let result = self.query_state(&query_code).await?;
-        let search_result: ContractSearchResult = serde_json::from_str(&result)?;
-        Ok(search_result)
-    }
-
-    // ============================================================================
-    // State Storage Methods (Deploy Operations)
-    // ============================================================================
-
-    /// Store contract metadata using StoreContract
-    /// This method deploys a contract to the blockchain to store contract metadata
+    /// Store RGB contract metadata using the RGB Storage Contract
+    /// Calls the "storeContract" method on the registered RGBStorage contract
+    /// 
+    /// Note: This requires the RGB storage contract to be deployed first
+    /// and set_rgb_uris() to be called with the contract URIs
+    /// Store RGB contract metadata using the RGB Storage Contract
+    /// 
+    /// Implementation:
+    /// 1. Look up the registered RGBStorage contract via registry
+    /// 2. Call the "storeContract" method on the contract
+    /// 3. The contract stores data in its internal treeHashMap (persists in closure)
+    /// 
+    /// This works because:
+    /// - The contract is registered in the system registry
+    /// - State lives in the contract's closure (accessible from exploratory deploys)
     pub async fn store_contract(
         &self,
         contract_id: &str,
         metadata: ContractMetadata,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let store_code = format!(
-            r#"
-            new return in {{
-              @"StoreContract"!(
-                "{}",
-                "{}",
-                "{}",
-                {},
-                {},
-                "{}",
-                "{}",
-                *return
-              ) |
-              for(@result <- return) {{
-                return!(result)
-              }}
-            }}
-            "#,
+        let uris = self.get_rgb_uris()?;
+        
+        // Generate Rholang code
+        let rholang_code = format!(
+            r#"new rl(`rho:registry:lookup`), rgbCh, ack in {{
+  rl!(`{}`, *rgbCh) |
+  for(@(_, RGBStorage) <- rgbCh) {{
+    @RGBStorage!("storeContract", "{}", {{
+      "schema": "RGB20",
+      "ticker": "{}",
+      "name": "{}",
+      "precision": {},
+      "total_supply": {},
+      "genesis_txid": "{}",
+      "issuer": "{}"
+    }}, *ack)
+  }}
+}}"#,
+            uris.store_contract,  // The URI of the registered RGBStorage contract
             contract_id,
             metadata.ticker,
             metadata.name,
@@ -395,11 +263,180 @@ impl FireflyClient {
             metadata.issuer_pubkey
         );
         
-        self.deploy(&store_code).await
+        self.deploy(&rholang_code).await
     }
 
-    /// Store allocation using StoreAllocation
-    /// This method deploys a contract to store allocation data in RSpace++
+    /// Query RGB contract metadata using the RGB Storage Contract
+    /// Calls the "getContract" method on the registered RGBStorage contract
+    /// 
+    /// Note: This requires the RGB storage contract to be deployed first
+    /// and set_rgb_uris() to be called with the contract URIs
+    pub async fn query_contract(
+        &self,
+        contract_id: &str,
+        _at_block_hash: Option<&str>,  // Not needed with insertSigned pattern
+    ) -> Result<ContractData, Box<dyn std::error::Error>> {
+        let uris = self.get_rgb_uris()?;
+        
+        // Generate Rholang query code
+        let query_code = format!(
+            r#"new return, rl(`rho:registry:lookup`), rgbCh in {{
+  rl!(`{}`, *rgbCh) |
+  for(@(_, rgbStorage) <- rgbCh) {{
+    @rgbStorage!("getContract", "{}", *return)
+  }}
+}}"#,
+            uris.get_contract,
+            contract_id
+        );
+        
+        // Use HTTP API directly to get the full JSON response
+        // This preserves complex Rholang data structures that rust-client's simplified parser loses
+        let http_client = reqwest::Client::new();
+        let response = http_client
+            .post(format!("http://{}:{}/api/explore-deploy", self.node_host, self.http_port))
+            .body(query_code)
+            .header("Content-Type", "text/plain")
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            return Ok(ContractData {
+                success: false,
+                contract: None,
+                error: Some(format!("HTTP error: {}", response.status())),
+            });
+        }
+        
+        // Parse the full JSON response
+        let json_response: serde_json::Value = response.json().await?;
+        
+        log::debug!("Raw JSON response: {}", serde_json::to_string_pretty(&json_response)?);
+        
+        // Extract the expr data from the response
+        // Response format: {"expr": [{"ExprMap": {...}}], "block": {...}}
+        if let Some(expr_array) = json_response.get("expr").and_then(|v| v.as_array()) {
+            if expr_array.is_empty() {
+                return Ok(ContractData {
+                    success: false,
+                    contract: None,
+                    error: Some("No data returned from contract".to_string()),
+                });
+            }
+            
+            // The contract returns a Rholang map, we need to convert it to plain JSON
+            let rholang_expr = &expr_array[0];
+            log::debug!("Rholang expression: {}", serde_json::to_string_pretty(rholang_expr)?);
+            
+            // Convert Rholang ExprMap to plain JSON
+            let plain_json = convert_rholang_to_json(rholang_expr)?;
+            log::debug!("Converted to plain JSON: {}", serde_json::to_string_pretty(&plain_json)?);
+            
+            // Try to parse as ContractData
+            match serde_json::from_value::<ContractData>(plain_json.clone()) {
+                Ok(contract_data) => Ok(contract_data),
+                Err(e) => {
+                    Ok(ContractData {
+                        success: false,
+                        contract: None,
+                        error: Some(format!("Failed to parse contract data: {}. Raw: {}", e, plain_json)),
+                    })
+                }
+            }
+        } else {
+            Ok(ContractData {
+                success: false,
+                contract: None,
+                error: Some("Invalid response format".to_string()),
+            })
+        }
+    }
+
+    /// Search for a contract by ticker symbol
+    /// Search for RGB contract by ticker using the RGB Storage Contract
+    /// 
+    /// Uses secondary index pattern: ticker → contract_id → metadata
+    pub async fn search_contract_by_ticker(
+        &self,
+        ticker: &str,
+    ) -> Result<ContractData, Box<dyn std::error::Error>> {
+        let uris = self.get_rgb_uris()?;
+        
+        // Generate Rholang query code
+        let query_code = format!(
+            r#"new return, rl(`rho:registry:lookup`), rgbCh in {{
+  rl!(`{}`, *rgbCh) |
+  for(@(_, rgbStorage) <- rgbCh) {{
+    @rgbStorage!("searchByTicker", "{}", *return)
+  }}
+}}"#,
+            uris.search_by_ticker,
+            ticker
+        );
+        
+        // Use HTTP API directly to get the full JSON response
+        let http_client = reqwest::Client::new();
+        let response = http_client
+            .post(format!("http://{}:{}/api/explore-deploy", self.node_host, self.http_port))
+            .body(query_code)
+            .header("Content-Type", "text/plain")
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            return Ok(ContractData {
+                success: false,
+                contract: None,
+                error: Some(format!("HTTP error: {}", response.status())),
+            });
+        }
+        
+        // Parse the full JSON response
+        let json_response: serde_json::Value = response.json().await?;
+        
+        log::debug!("Raw JSON response: {}", serde_json::to_string_pretty(&json_response)?);
+        
+        // Extract the expr data from the response
+        if let Some(expr_array) = json_response.get("expr").and_then(|v| v.as_array()) {
+            if expr_array.is_empty() {
+                return Ok(ContractData {
+                    success: false,
+                    contract: None,
+                    error: Some("No data returned from contract".to_string()),
+                });
+            }
+            
+            // Convert Rholang ExprMap to plain JSON
+            let rholang_expr = &expr_array[0];
+            log::debug!("Rholang expression: {}", serde_json::to_string_pretty(rholang_expr)?);
+            
+            let plain_json = convert_rholang_to_json(rholang_expr)?;
+            log::debug!("Converted to plain JSON: {}", serde_json::to_string_pretty(&plain_json)?);
+            
+            // Try to parse as ContractData
+            match serde_json::from_value::<ContractData>(plain_json.clone()) {
+                Ok(contract_data) => Ok(contract_data),
+                Err(e) => {
+                    Ok(ContractData {
+                        success: false,
+                        contract: None,
+                        error: Some(format!("Failed to parse contract data: {}. Raw: {}", e, plain_json)),
+                    })
+                }
+            }
+        } else {
+            Ok(ContractData {
+                success: false,
+                contract: None,
+                error: Some("Invalid response format".to_string()),
+            })
+        }
+    }
+
+    /// Store RGB allocation using the RGB Storage Contract
+    /// 
+    /// Stores allocation data in the RGBStorage contract's allocationMapCh
+    /// Key format: "{contract_id}:{utxo}"
     pub async fn store_allocation(
         &self,
         contract_id: &str,
@@ -408,35 +445,260 @@ impl FireflyClient {
         amount: u64,
         bitcoin_txid: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let store_code = format!(
-            r#"
-            new return in {{
-              @"StoreAllocation"!(
-                "{}",
-                "{}",
-                "{}",
-                {},
-                "{}",
-                *return
-              ) |
-              for(@result <- return) {{
-                return!(result)
-              }}
-            }}
-            "#,
-            contract_id, utxo, owner_pubkey, amount, bitcoin_txid
+        let uris = self.get_rgb_uris()?;
+        
+        // Generate composite key: contract_id:utxo
+        let key = format!("{}:{}", contract_id, utxo);
+        
+        // Get current timestamp
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        
+        // Generate Rholang code
+        let rholang_code = format!(
+            r#"new rl(`rho:registry:lookup`), rgbCh, ack in {{
+  rl!(`{}`, *rgbCh) |
+  for(@(_, RGBStorage) <- rgbCh) {{
+    @RGBStorage!("storeAllocation", "{}", {{
+      "owner": "{}",
+      "amount": {},
+      "bitcoin_txid": "{}",
+      "confirmed": true,
+      "created_at": {}
+    }}, *ack)
+  }}
+}}"#,
+            uris.store_allocation,
+            key,
+            owner_pubkey,
+            amount,
+            bitcoin_txid,
+            timestamp
+        );
+
+        self.deploy(&rholang_code).await
+    }
+
+    /// Query RGB allocation using the RGB Storage Contract
+    /// 
+    /// Queries allocation data from the RGBStorage contract's allocationMapCh
+    /// Key format: "{contract_id}:{utxo}"
+    pub async fn query_allocation(
+        &self,
+        contract_id: &str,
+        utxo: &str,
+    ) -> Result<AllocationData, Box<dyn std::error::Error>> {
+        let uris = self.get_rgb_uris()?;
+        
+        // Generate composite key: contract_id:utxo
+        let key = format!("{}:{}", contract_id, utxo);
+        
+        // Generate Rholang query code
+        let query_code = format!(
+            r#"new return, rl(`rho:registry:lookup`), rgbCh in {{
+  rl!(`{}`, *rgbCh) |
+  for(@(_, rgbStorage) <- rgbCh) {{
+    @rgbStorage!("getAllocation", "{}", *return)
+  }}
+}}"#,
+            uris.get_allocation,
+            key
         );
         
-        self.deploy(&store_code).await
+        // Use HTTP API directly to get the full JSON response
+        let http_client = reqwest::Client::new();
+        let response = http_client
+            .post(format!("http://{}:{}/api/explore-deploy", self.node_host, self.http_port))
+            .body(query_code)
+            .header("Content-Type", "text/plain")
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            return Ok(AllocationData {
+                success: false,
+                allocation: None,
+                error: Some(format!("HTTP error: {}", response.status())),
+            });
+        }
+        
+        // Parse the full JSON response
+        let json_response: serde_json::Value = response.json().await?;
+        
+        log::debug!("Raw JSON response: {}", serde_json::to_string_pretty(&json_response)?);
+        
+        // Extract the expr data from the response
+        if let Some(expr_array) = json_response.get("expr").and_then(|v| v.as_array()) {
+            if expr_array.is_empty() {
+                return Ok(AllocationData {
+                    success: false,
+                    allocation: None,
+                    error: Some("No data returned from contract".to_string()),
+                });
+            }
+            
+            // Convert Rholang ExprMap to plain JSON
+            let rholang_expr = &expr_array[0];
+            log::debug!("Rholang expression: {}", serde_json::to_string_pretty(rholang_expr)?);
+            
+            let plain_json = convert_rholang_to_json(rholang_expr)?;
+            log::debug!("Converted to plain JSON: {}", serde_json::to_string_pretty(&plain_json)?);
+            
+            // Try to parse as AllocationData
+            match serde_json::from_value::<AllocationData>(plain_json.clone()) {
+                Ok(allocation_data) => Ok(allocation_data),
+                Err(e) => {
+                    Ok(AllocationData {
+                        success: false,
+                        allocation: None,
+                        error: Some(format!("Failed to parse allocation data: {}. Raw: {}", e, plain_json)),
+                    })
+                }
+            }
+        } else {
+            Ok(AllocationData {
+                success: false,
+                allocation: None,
+                error: Some("Invalid response format".to_string()),
+            })
+        }
     }
-}
 
-/// Computes a Blake2b 256-bit hash of the provided data
-fn blake2b_256_hash(data: &[u8]) -> [u8; 32] {
-    let mut blake = Blake2b::<U32>::new();
-    blake.update(data);
-    let hash = blake.finalize();
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&hash);
-    result
+    /// Store RGB transition using the RGB Storage Contract
+    /// 
+    /// Stores transition data in the RGBStorage contract's transitionMapCh
+    /// Key format: "{contract_id}:{from_utxo}:{to_utxo}"
+    pub async fn record_transition(
+        &self,
+        contract_id: &str,
+        from_utxo: &str,
+        to_utxo: &str,
+        amount: u64,
+        bitcoin_txid: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let uris = self.get_rgb_uris()?;
+        
+        // Generate composite key: contract_id:from_utxo:to_utxo
+        let key = format!("{}:{}:{}", contract_id, from_utxo, to_utxo);
+        
+        // Get current timestamp
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        
+        // Generate Rholang code
+        let rholang_code = format!(
+            r#"new rl(`rho:registry:lookup`), rgbCh, ack in {{
+  rl!(`{}`, *rgbCh) |
+  for(@(_, RGBStorage) <- rgbCh) {{
+    @RGBStorage!("recordTransition", "{}", {{
+      "from": "{}",
+      "to": "{}",
+      "amount": {},
+      "bitcoin_txid": "{}",
+      "timestamp": {},
+      "validated": false
+    }}, *ack)
+  }}
+}}"#,
+            uris.record_transition,
+            key,
+            from_utxo,
+            to_utxo,
+            amount,
+            bitcoin_txid,
+            timestamp
+        );
+
+        self.deploy(&rholang_code).await
+    }
+
+    /// Query RGB transition using the RGB Storage Contract
+    /// 
+    /// Queries transition data from the RGBStorage contract's transitionMapCh
+    /// Key format: "{contract_id}:{from_utxo}:{to_utxo}"
+    pub async fn query_transition(
+        &self,
+        contract_id: &str,
+        from_utxo: &str,
+        to_utxo: &str,
+    ) -> Result<TransitionData, Box<dyn std::error::Error>> {
+        let uris = self.get_rgb_uris()?;
+        
+        // Generate composite key: contract_id:from_utxo:to_utxo
+        let key = format!("{}:{}:{}", contract_id, from_utxo, to_utxo);
+        
+        // Generate Rholang query code
+        let query_code = format!(
+            r#"new return, rl(`rho:registry:lookup`), rgbCh in {{
+  rl!(`{}`, *rgbCh) |
+  for(@(_, rgbStorage) <- rgbCh) {{
+    @rgbStorage!("getTransition", "{}", *return)
+  }}
+}}"#,
+            uris.get_transition,
+            key
+        );
+        
+        // Use HTTP API directly to get the full JSON response
+        let http_client = reqwest::Client::new();
+        let response = http_client
+            .post(format!("http://{}:{}/api/explore-deploy", self.node_host, self.http_port))
+            .body(query_code)
+            .header("Content-Type", "text/plain")
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            return Ok(TransitionData {
+                success: false,
+                transition: None,
+                error: Some(format!("HTTP error: {}", response.status())),
+            });
+        }
+        
+        // Parse the full JSON response
+        let json_response: serde_json::Value = response.json().await?;
+        
+        log::debug!("Raw JSON response: {}", serde_json::to_string_pretty(&json_response)?);
+        
+        // Extract the expr data from the response
+        if let Some(expr_array) = json_response.get("expr").and_then(|v| v.as_array()) {
+            if expr_array.is_empty() {
+                return Ok(TransitionData {
+                    success: false,
+                    transition: None,
+                    error: Some("No data returned from contract".to_string()),
+                });
+            }
+            
+            // Convert Rholang ExprMap to plain JSON
+            let rholang_expr = &expr_array[0];
+            log::debug!("Rholang expression: {}", serde_json::to_string_pretty(rholang_expr)?);
+            
+            let plain_json = convert_rholang_to_json(rholang_expr)?;
+            log::debug!("Converted to plain JSON: {}", serde_json::to_string_pretty(&plain_json)?);
+            
+            // Try to parse as TransitionData
+            match serde_json::from_value::<TransitionData>(plain_json.clone()) {
+                Ok(transition_data) => Ok(transition_data),
+                Err(e) => {
+                    Ok(TransitionData {
+                        success: false,
+                        transition: None,
+                        error: Some(format!("Failed to parse transition data: {}. Raw: {}", e, plain_json)),
+                    })
+                }
+            }
+        } else {
+            Ok(TransitionData {
+                success: false,
+                transition: None,
+                error: Some("Invalid response format".to_string()),
+            })
+        }
+    }
 }

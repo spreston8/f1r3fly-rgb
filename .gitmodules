@@ -21,11 +21,11 @@
 [submodule "rust-client"]
 	path = rust-client
 	url = git@github.com:F1R3FLY-io/rust-client.git
-	branch = main
+	branch = rgb
 [submodule "f1r3node"]
 	path = f1r3node
 	url = git@github.com:F1R3FLY-io/f1r3node.git
-	branch = rust/dev
+	branch = main
 [submodule "electrs"]
 	path = electrs
 	url = git@github.com:Blockstream/electrs.git
@@ -33,3 +33,6 @@
 [submodule "esplora"]
 	path = esplora
 	url = git@github.com:Blockstream/esplora.git
+[submodule "embers"]
+	path = embers
+	url = git@github.com:F1R3FLY-io/embers.git

@@ -26,7 +26,9 @@ pub struct Contract {
     pub total_supply: u64,
     pub genesis_txid: String,
     pub issuer: String,
+    #[serde(default)]
     pub created_at: i64,
+    #[serde(default)]
     pub network: String,
 }
 

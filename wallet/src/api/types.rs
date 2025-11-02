@@ -3,12 +3,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 pub struct CreateWalletRequest {
     pub name: String,
+    pub rgb_mode: Option<crate::wallet::shared::RgbMode>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ImportWalletRequest {
     pub name: String,
     pub mnemonic: String,
+    pub rgb_mode: Option<crate::wallet::shared::RgbMode>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -143,6 +145,7 @@ pub struct WalletInfo {
     pub first_address: String,
     pub public_address: String,
     pub descriptor: String,
+    pub rgb_mode: crate::wallet::shared::RgbMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +153,7 @@ pub struct WalletMetadata {
     pub name: String,
     pub created_at: String,
     pub last_synced: Option<String>,
+    pub rgb_mode: crate::wallet::shared::RgbMode,
 }
 
 // Address management result types

@@ -27,7 +27,8 @@ pub async fn create_wallet_handler(
     State(manager): State<Arc<WalletManager>>,
     Json(req): Json<CreateWalletRequest>,
 ) -> Result<Json<WalletInfo>, crate::error::WalletError> {
-    let wallet_info = manager.create_wallet(&req.name)?;
+    let rgb_mode = req.rgb_mode.unwrap_or_default();
+    let wallet_info = manager.create_wallet(&req.name, rgb_mode)?;
     Ok(Json(wallet_info))
 }
 
@@ -39,7 +40,8 @@ pub async fn import_wallet_handler(
     let mnemonic = bip39::Mnemonic::parse(&req.mnemonic)
         .map_err(|e| crate::error::WalletError::InvalidInput(format!("Invalid mnemonic: {}", e)))?;
 
-    let wallet_info = manager.import_wallet(&req.name, mnemonic)?;
+    let rgb_mode = req.rgb_mode.unwrap_or_default();
+    let wallet_info = manager.import_wallet(&req.name, mnemonic, rgb_mode)?;
     Ok(Json(wallet_info))
 }
 
@@ -184,6 +186,7 @@ pub async fn issue_asset_handler(
     Ok(Json(result))
 }
 
+#[axum::debug_handler]
 pub async fn issue_asset_with_firefly_handler(
     State(manager): State<Arc<WalletManager>>,
     Path(name): Path<String>,

@@ -7,7 +7,7 @@ use crate::error::WalletError;
 use chrono::Utc;
 
 /// Create a new wallet with a generated mnemonic
-pub fn create_wallet(storage: &Storage, name: &str) -> Result<WalletInfo, WalletError> {
+pub fn create_wallet(storage: &Storage, name: &str, rgb_mode: RgbMode) -> Result<WalletInfo, WalletError> {
     if storage.wallet_exists(name) {
         return Err(WalletError::WalletExists(name.to_string()));
     }
@@ -20,6 +20,7 @@ pub fn create_wallet(storage: &Storage, name: &str) -> Result<WalletInfo, Wallet
         name: name.to_string(),
         created_at: Utc::now(),
         network: "signet".to_string(),
+        rgb_mode,
     };
     storage.save_metadata(name, &metadata)?;
     storage.save_mnemonic(name, &keys.mnemonic)?;
@@ -34,6 +35,7 @@ pub fn create_wallet(storage: &Storage, name: &str) -> Result<WalletInfo, Wallet
         first_address: first_address.to_string(),
         public_address: public_address.to_string(),
         descriptor: keys.descriptor,
+        rgb_mode,
     })
 }
 
@@ -42,6 +44,7 @@ pub fn import_wallet(
     storage: &Storage,
     name: &str,
     mnemonic: bip39::Mnemonic,
+    rgb_mode: RgbMode,
 ) -> Result<WalletInfo, WalletError> {
     if storage.wallet_exists(name) {
         return Err(WalletError::WalletExists(name.to_string()));
@@ -55,6 +58,7 @@ pub fn import_wallet(
         name: name.to_string(),
         created_at: Utc::now(),
         network: "signet".to_string(),
+        rgb_mode,
     };
     storage.save_metadata(name, &metadata)?;
     storage.save_mnemonic(name, &keys.mnemonic)?;
@@ -69,6 +73,7 @@ pub fn import_wallet(
         first_address: first_address.to_string(),
         public_address: public_address.to_string(),
         descriptor: keys.descriptor,
+        rgb_mode,
     })
 }
 
@@ -88,6 +93,7 @@ pub fn list_wallets(storage: &Storage) -> Result<Vec<WalletMetadata>, WalletErro
                 name: metadata.name,
                 created_at: metadata.created_at.to_rfc3339(),
                 last_synced,
+                rgb_mode: metadata.rgb_mode,
             });
         }
     }

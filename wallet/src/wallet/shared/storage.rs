@@ -167,6 +167,16 @@ impl Storage {
         
         Ok(())
     }
+
+    /// Get the RGB mode for a wallet
+    /// 
+    /// Returns the RGB operation mode (Traditional or F1r3fly) for the specified wallet.
+    /// If the wallet metadata doesn't have an rgb_mode field (backward compatibility),
+    /// it will default to Traditional.
+    pub fn get_wallet_rgb_mode(&self, name: &str) -> Result<super::RgbMode, crate::error::StorageError> {
+        let metadata = self.load_metadata(name)?;
+        Ok(metadata.rgb_mode)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +184,8 @@ pub struct Metadata {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub network: String,
+    #[serde(default)]
+    pub rgb_mode: super::RgbMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

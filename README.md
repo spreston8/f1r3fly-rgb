@@ -17,7 +17,7 @@ git submodule update --init --recursive
 
 Update submodules:
 ```bash
-git submodule update --remote
+git submodule update --remote --recursive
 ```
 
 ## Components

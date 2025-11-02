@@ -379,7 +379,7 @@ pub struct IssueAssetResponse {
     pub genesis_seal: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IssueAssetResponseWithFirefly {
     pub contract_id: String,
     pub genesis_seal: String,

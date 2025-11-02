@@ -9,44 +9,7 @@
 /// - Wallet should have at least 50,000 sats
 /// - Internet connection for Esplora API
 /// - ~15-20 minutes for test execution (includes block confirmations)
-/// 
-/// Setup:
-/// ```bash
-/// # Create .env file in wallet/ directory:
-/// echo 'TEST_MNEMONIC="your twelve word mnemonic here"' > .env
-/// echo 'TEST_TIMEOUT=900' >> .env  # Optional: 15 minutes
-/// ```
-/// 
-/// Run with:
-/// ```bash
-/// cargo test --test rgb_transfer_balance_test -- --ignored --nocapture
-/// ```
-/// 
-/// ## Regtest Mode (Fast Local Testing)
-/// Prerequisites:
-/// - Bitcoin Core running in Regtest mode
-/// - Esplora mock server running
-/// - Funded test wallet (generate blocks to fund)
-/// - ~30 seconds for test execution (instant mining)
-/// 
-/// Setup:
-/// ```bash
-/// # Terminal 1: Start Bitcoin Core Regtest
-/// bitcoind -regtest -daemon -rpcuser=regtest -rpcpassword=regtest
-/// bitcoin-cli -regtest createwallet "test_wallet"
-/// bitcoin-cli -regtest -generate 101  # Fund wallet
-/// 
-/// # Terminal 2: Start Esplora Mock Server
-/// cd esplora-mock
-/// BITCOIN_RPC_USER=regtest BITCOIN_RPC_PASSWORD=regtest cargo run
-/// 
-/// # Terminal 3: Run test
-/// cd wallet
-/// BITCOIN_NETWORK=regtest \
-/// ESPLORA_URL=http://localhost:3000 \
-/// TEST_MNEMONIC="your test mnemonic" \
-/// cargo test --test rgb_transfer_balance_test -- --ignored --nocapture
-/// ```
+
 
 mod common;
 
@@ -88,12 +51,12 @@ async fn run_test_logic(timeout: u64, fee_rate: u64) -> anyhow::Result<()> {
     
     // Import funded wallet
     log::info!("Importing funded wallet: {}", env.wallet1_name);
-    env.manager.import_wallet(&env.wallet1_name, mnemonic)?;
+    env.manager.import_wallet(&env.wallet1_name, mnemonic, wallet::wallet::shared::RgbMode::Traditional)?;
     log::info!("✓ Wallet imported");
     
     // Create recipient wallet
     log::info!("Creating recipient wallet: {}", env.wallet2_name);
-    let _wallet2_info = env.manager.create_wallet(&env.wallet2_name)?;
+    let _wallet2_info = env.manager.create_wallet(&env.wallet2_name, wallet::wallet::shared::RgbMode::Traditional)?;
     log::info!("✓ Recipient wallet created");
     
     // ============================================================================

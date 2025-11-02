@@ -1,5 +1,20 @@
 // Bitcoin Validator Integration Tests
 // Tests for BitcoinValidator validation logic
+//
+// Scope:
+// - Bitcoin transaction validation (Esplora API)
+// - UTXO existence and amount verification
+// - Transaction confirmation checks
+// - Input/output matching
+// - Double-spend detection via Bitcoin blockchain
+//
+// F1r3fly Interaction:
+// - F1r3fly state is MOCKED or ASSUMED (focus on Bitcoin validation)
+// - Tests validate Bitcoin reality, not F1r3fly state management
+//
+// For tests requiring F1r3fly + Bitcoin together, see:
+// - test_e2e_phase0.rs (E2E workflows)
+// - rgb_transfer_balance_test.rs (Full RGB workflow)
 
 #[tokio::test]
 async fn test_validate_allocation_success() {
@@ -84,5 +99,41 @@ async fn test_bitcoin_network_error() {
     // Test: BitcoinValidator with unreachable Esplora
     // Verify: Network error handled gracefully
     todo!("Implement: Handle network errors");
+}
+
+#[tokio::test]
+async fn test_validate_transition_double_spend() {
+    // Test: Detect double-spend via Bitcoin blockchain validation
+    //
+    // Scenario:
+    // 1. Alice has allocation of 100,000 tokens at UTXO_A (Bitcoin txid: TX1)
+    // 2. Alice creates Transition 1: UTXO_A → UTXO_B (60,000 tokens, Bitcoin txid: TX2)
+    // 3. Validate Transition 1 against Bitcoin:
+    //    - Query TX2 from Esplora
+    //    - Verify TX2 spends TX1:vout (UTXO_A)
+    //    - Validation succeeds, UTXO_A is now spent on Bitcoin
+    // 4. Alice creates Transition 2: UTXO_A → UTXO_C (40,000 tokens, Bitcoin txid: TX3)
+    // 5. Attempt to validate Transition 2 against Bitcoin:
+    //    - Query TX3 from Esplora
+    //    - TX3 claims to spend TX1:vout (UTXO_A)
+    //    - But TX1:vout is already spent by TX2!
+    //
+    // Expected Result:
+    // - Validation fails with error: "UTXO already spent" or "Double spend detected"
+    // - BitcoinValidator queries Esplora and finds TX1:vout is spent
+    // - Transition 2 cannot be validated
+    // - System prevents accepting invalid Bitcoin state
+    //
+    // This test validates:
+    // - Double-spend detection via Bitcoin blockchain
+    // - UTXO spent state verification (query Esplora for UTXO status)
+    // - Protection against malicious actors trying to forge transitions
+    // - Core RGB security: Bitcoin is the source of truth for UTXO state
+    //
+    // Implementation notes:
+    // - Requires real Bitcoin transactions (Regtest or Signet)
+    // - Or mock Esplora responses to simulate spent UTXO
+    // - Must query: GET /api/tx/:txid/outspend/:vout to check if spent
+    todo!("Implement: Validate transition - double spend detection via Bitcoin");
 }
 

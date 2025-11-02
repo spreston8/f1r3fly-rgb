@@ -4,4 +4,5 @@
 pub mod test_bitcoin_validator;    // Bitcoin validation logic
 pub mod test_e2e_phase0;           // End-to-end workflows
 pub mod test_error_handling;       // Error conditions & edge cases
+pub mod f1r3fly;                   // F1r3fly/RSpace integration tests
 

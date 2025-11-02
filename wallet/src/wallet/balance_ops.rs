@@ -54,13 +54,13 @@ pub fn get_rgb_balance_sync(
     _storage: &Storage,
     rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
-    utxos: &[balance::UTXO],
+    _utxos: &[balance::UTXO],
 ) -> Result<RgbBalanceData, WalletError> {
     use hypersonic::StateName;
     use std::str::FromStr;
-    use bpstd::{Outpoint, Vout};
-    use bitcoin::hashes::Hash;
-    use amplify::ByteArray;
+    
+    
+    
 
     // Create ephemeral runtime (matches RGB CLI)
     log::debug!("Creating ephemeral RGB runtime for balance query");
@@ -149,7 +149,7 @@ pub fn get_rgb_balance_sync(
                 // Check if this wallet owns this UTXO
                 // OwnerProvider trait gives us direct access to check UTXO ownership
                 let owns_utxo = {
-                    use rgbp::OwnerProvider;
+                    
                     // Try to get UTXO info - if it exists, we own it
                     runtime.wallet.utxo(seal_outpoint).is_some()
                 };

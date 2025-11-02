@@ -1,75 +1,212 @@
-// RGB State Storage Contracts for F1r3fly/RSpace++
-// These contracts use RSpace++ channels for persistent state storage
+// RGB State Storage Contract for F1r3fly/RSpace
+// 
+// This contract implements persistent state management:
+// - Uses treeHashMap for internal state storage
+// - Registers with insertSigned for deterministic URI
+// - Accessible from exploratory deploys via registry lookup
+//
+// Pattern:
+// 1. Deploy: Regular deploy with insertSigned registration
+// 2. Store: Regular deploy calling @RGBStorage!("storeX", ...)
+// 3. Query: Exploratory deploy calling @RGBStorage!("getX", ...)
+//
+// Implementation:
+// - Contract is registered in the system registry
+// - State lives in the contract's closure via treeHashMapCh with peek (<<-)
+// - Contract methods execute within the exploratory deploy context
 
-new StoreContract, StoreAllocation, GetAllocation, RecordTransition, GetContract, SearchContractByTicker in {
+new RGBStorage,
+    rl(`rho:registry:lookup`),
+    rs(`rho:registry:insertSigned:secp256k1`),
+    stdout(`rho:io:stdout`),
+    abort(`rho:execution:abort`),
+    devNull(`rho:io:devNull`),
+    treeHashMapCh,
+    contractMapCh,
+    tickerIndexCh,
+    allocationMapCh,
+    transitionMapCh,
+    prevEnvCh,
+    initEnv,
+    uriOut
+in {
+  // Check if contract already exists (Embers pattern for upgrades)
+  rl!(`{{URI}}`, *prevEnvCh) |
   
-  // Contract: Store RGB20 contract metadata in RSpace++
-  contract StoreContract(@contractId, @ticker, @name, @precision, @totalSupply, @genesisTxid, @issuerPubKey, return) = {
-    // Store contract metadata in RSpace++ channel
-    @["rgb", "contracts", contractId]!({
-      "schema": "RGB20",
-      "ticker": ticker,
-      "name": name,
-      "precision": precision,
-      "total_supply": totalSupply,
-      "genesis_txid": genesisTxid,
-      "issuer": issuerPubKey
-    }) |
-    
-    // Index by ticker for discovery
-    @["rgb", "contracts_by_ticker", ticker]!(contractId) |
-    
-    return!({"success": true, "contract_id": contractId})
+  for(@Nil <- prevEnvCh) {
+    initEnv!()
   } |
   
-  // Contract: Store allocation (who owns what UTXO) in RSpace++
-  contract StoreAllocation(@contractId, @utxo, @ownerPubKey, @amount, @bitcoinTxid, return) = {
-    // Store allocation in RSpace++ channel
-    @["rgb", "allocations", contractId, utxo]!({
-      "owner": ownerPubKey,
-      "amount": amount,
-      "bitcoin_txid": bitcoinTxid,
-      "confirmed": false
-    }) |
-    
-    return!({"success": true, "utxo": utxo})
-  } |
-  
-  // Contract: Query allocation from RSpace++
-  contract GetAllocation(@contractId, @utxo, return) = {
-    for (@allocation <<- @["rgb", "allocations", contractId, utxo]) {
-      return!({"success": true, "allocation": allocation})
+  for(@(version, _) <- prevEnvCh) {
+    if (version < {{VERSION}}) {
+      initEnv!()
     }
   } |
   
-  // Contract: Record state transition in RSpace++
-  contract RecordTransition(@contractId, @fromUtxo, @toUtxo, @amount, @bitcoinTxid, return) = {
-    new transitionId in {
-      @["rgb", "transitions", contractId, *transitionId]!({
-        "from": fromUtxo,
-        "to": toUtxo,
-        "amount": amount,
-        "bitcoin_txid": bitcoinTxid,
-        "validated": false
-      }) |
+  for(<- initEnv) {
+    // Initialize treeHashMap for RGB data storage (Embers pattern)
+    rl!(`rho:lang:treeHashMap`, *treeHashMapCh) |
+    
+    for(treeHashMap <- treeHashMapCh) {
+      treeHashMap!("init", 3, *treeHashMapCh) |
       
-      return!({"success": true, "transition_id": *transitionId})
-    }
-  } |
-  
-  // Contract: Query contract metadata
-  contract GetContract(@contractId, return) = {
-    for (@contractData <<- @["rgb", "contracts", contractId]) {
-      return!({"success": true, "contract": contractData})
-    }
-  } |
-  
-  // Contract: Search contracts by ticker
-  contract SearchContractByTicker(@ticker, return) = {
-    for (@contractId <<- @["rgb", "contracts_by_ticker", ticker]) {
-      for (@contractData <<- @["rgb", "contracts", contractId]) {
-        return!({"success": true, "contract_id": contractId, "contract": contractData})
+      for(@map <- treeHashMapCh) {
+        // Store treeHashMap and empty map back on channel for persistent access
+        treeHashMapCh!(*treeHashMap, map) |
+        
+        // Also store on individual channels for each data type
+        contractMapCh!(*treeHashMap, map) |
+        tickerIndexCh!(*treeHashMap, map) |
+        allocationMapCh!(*treeHashMap, map) |
+        transitionMapCh!(*treeHashMap, map)
       }
+    } |
+      
+    // =============================================================================
+    // CONTRACT STORAGE METHODS
+    // =============================================================================
+      
+    contract RGBStorage(@"storeContract", @contractId, @metadata, ack) = {
+      for(treeHashMap, @currentMap <<- contractMapCh; tickerTreeHashMap, @tickerMap <<- tickerIndexCh) {
+        // Store in main contract map
+        treeHashMap!("set", currentMap, contractId, metadata, *devNull) |
+        // Store in ticker index (ticker -> contract_id)
+        tickerTreeHashMap!("set", tickerMap, metadata.get("ticker"), contractId, *devNull) |
+        ack!({"success": true, "contract_id": contractId})
+      }
+    } |
+      
+      contract RGBStorage(@"getContract", @contractId, ret) = {
+        new foundCh, notFoundCh in {
+          for(treeHashMap, @currentMap <<- contractMapCh) {
+            treeHashMap!("getOrElse", currentMap, contractId, *foundCh, *notFoundCh)
+          } |
+          
+          for(@contractData <- foundCh) {
+            ret!({"success": true, "contract": contractData})
+          } |
+          
+          for(<- notFoundCh) {
+            ret!({"success": false, "error": "Contract not found"})
+          }
+        }
+      } |
+      
+      contract RGBStorage(@"searchByTicker", @ticker, ret) = {
+        new contractIdCh in {
+          // Step 1: Look up contract_id by ticker in the index
+          for(tickerTreeHashMap, @tickerMap <<- tickerIndexCh) {
+            tickerTreeHashMap!("get", tickerMap, ticker, *contractIdCh)
+          } |
+          
+          // Step 2: Get contract metadata by contract_id
+          for(@contractIdResult <- contractIdCh) {
+            match contractIdResult {
+              Nil => {
+                ret!({"success": false, "error": "Ticker not found"})
+              }
+              contractId => {
+                new foundCh, notFoundCh in {
+                  for(treeHashMap, @currentMap <<- contractMapCh) {
+                    treeHashMap!("getOrElse", currentMap, contractId, *foundCh, *notFoundCh)
+                  } |
+                  
+                  for(@contractData <- foundCh) {
+                    ret!({"success": true, "contract": contractData})
+                  } |
+                  
+                  for(<- notFoundCh) {
+                    ret!({"success": false, "error": "Contract not found (inconsistent index)"})
+                  }
+                }
+              }
+            }
+          }
+        }
+      } |
+      
+      // =============================================================================
+      // ALLOCATION STORAGE METHODS
+      // =============================================================================
+      
+      contract RGBStorage(@"storeAllocation", @key, @allocation, ack) = {
+        for(treeHashMap, @currentMap <<- allocationMapCh) {
+          treeHashMap!("set", currentMap, key, allocation, *devNull) |
+          ack!({"success": true, "key": key})
+        }
+      } |
+      
+      contract RGBStorage(@"getAllocation", @key, ret) = {
+        new foundCh, notFoundCh in {
+          for(treeHashMap, @currentMap <<- allocationMapCh) {
+            treeHashMap!("getOrElse", currentMap, key, *foundCh, *notFoundCh)
+          } |
+          
+          for(@allocationData <- foundCh) {
+            ret!({"success": true, "allocation": allocationData})
+          } |
+          
+          for(<- notFoundCh) {
+            ret!({"success": false, "error": "Allocation not found"})
+          }
+        }
+      } |
+      
+      // =============================================================================
+      // TRANSITION STORAGE METHODS
+      // =============================================================================
+      
+      contract RGBStorage(@"recordTransition", @key, @transition, ack) = {
+        for(treeHashMap, @currentMap <<- transitionMapCh) {
+          treeHashMap!("set", currentMap, key, transition, *devNull) |
+          ack!({"success": true, "key": key})
+        }
+      } |
+      
+      contract RGBStorage(@"getTransition", @key, ret) = {
+        new foundCh, notFoundCh in {
+          for(treeHashMap, @currentMap <<- transitionMapCh) {
+            treeHashMap!("getOrElse", currentMap, key, *foundCh, *notFoundCh)
+          } |
+          
+          for(@transitionData <- foundCh) {
+            ret!({"success": true, "transition": transitionData})
+          } |
+          
+          for(<- notFoundCh) {
+            ret!({"success": false, "error": "Transition not found"})
+          }
+        }
+      } |
+      
+    // =============================================================================
+    // REGISTRY REGISTRATION
+    // =============================================================================
+    // 
+    // Register the RGBStorage contract using insertSigned
+    // This creates a deterministic URI based on the deployer's public key
+    // 
+    // The Scala version of insertSigned verifies: blake2b256((timestamp, deployerPubKey, version))
+    // where timestamp and deployerPubKey come from rho:deploy:data
+    //
+    // Template placeholders (replaced by Rust):
+    // - {{PUBLIC_KEY}} - Uncompressed secp256k1 public key (hex)
+    // - {{VERSION}} - Timestamp in milliseconds (for versioning)
+    // - {{SIGNATURE}} - DER-encoded ECDSA signature of (timestamp, deployerPubKey, version)
+    
+    rs!(
+      "{{PUBLIC_KEY}}".hexToBytes(),
+      ({{VERSION}}, bundle+{*RGBStorage}),
+      "{{SIGNATURE}}".hexToBytes(),
+      *uriOut
+    ) |
+        
+    for (@Nil <- uriOut) {
+      abort!("RGB Storage: insertSigned returned Nil - registration failed!")
+    } |
+    
+    for (@uri <- uriOut) {
+      stdout!(("RGB Storage Contract Registered - URI:", uri, "Version:", {{VERSION}}))
     }
   }
 }
