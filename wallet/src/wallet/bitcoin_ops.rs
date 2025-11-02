@@ -22,6 +22,7 @@ fn get_network() -> Network {
 pub async fn create_utxo(
     storage: &Storage,
     balance_checker: &BalanceChecker,
+    rgb_runtime_manager: &super::shared::RgbRuntimeManager,
     wallet_name: &str,
     request: CreateUtxoRequest,
 ) -> Result<CreateUtxoResult, WalletError> {
@@ -39,7 +40,7 @@ pub async fn create_utxo(
     log::info!("Creating UTXO for wallet: {} (amount: {} sats, fee rate: {} sat/vB)", 
         wallet_name, amount_sats, fee_rate);
 
-    let balance = get_balance_for_tx(storage, balance_checker, wallet_name).await?;
+    let balance = get_balance_for_tx(storage, balance_checker, rgb_runtime_manager, wallet_name).await?;
 
     if balance.utxos.is_empty() {
         return Err(WalletError::InsufficientFunds(
@@ -118,6 +119,7 @@ pub async fn create_utxo(
 pub async fn unlock_utxo(
     storage: &Storage,
     balance_checker: &BalanceChecker,
+    rgb_runtime_manager: &super::shared::RgbRuntimeManager,
     wallet_name: &str,
     request: UnlockUtxoRequest,
 ) -> Result<UnlockUtxoResult, WalletError> {
@@ -127,7 +129,7 @@ pub async fn unlock_utxo(
 
     let fee_rate = request.fee_rate_sat_vb.unwrap_or(2);
 
-    let balance = get_balance_for_tx(storage, balance_checker, wallet_name).await?;
+    let balance = get_balance_for_tx(storage, balance_checker, rgb_runtime_manager, wallet_name).await?;
 
     let target_utxo = balance
         .utxos
@@ -185,6 +187,7 @@ pub async fn unlock_utxo(
 pub async fn send_bitcoin(
     storage: &Storage,
     balance_checker: &BalanceChecker,
+    rgb_runtime_manager: &super::shared::RgbRuntimeManager,
     wallet_name: &str,
     request: SendBitcoinRequest,
 ) -> Result<SendBitcoinResponse, WalletError> {
@@ -207,7 +210,7 @@ pub async fn send_bitcoin(
         })?;
 
     let fee_rate = request.fee_rate_sat_vb.unwrap_or(2);
-    let balance = get_balance_for_tx(storage, balance_checker, wallet_name).await?;
+    let balance = get_balance_for_tx(storage, balance_checker, rgb_runtime_manager, wallet_name).await?;
 
     if balance.utxos.is_empty() {
         return Err(WalletError::InsufficientFunds(
@@ -302,10 +305,12 @@ pub async fn send_bitcoin(
 // Helper Functions
 // ============================================================================
 
-/// Helper to get balance without RGB info (used internally for bitcoin operations)
+/// Helper to get balance for transaction building
+/// CRITICAL: Includes RGB state to prevent spending RGB-occupied UTXOs
 async fn get_balance_for_tx(
     storage: &Storage,
     balance_checker: &BalanceChecker,
+    rgb_runtime_manager: &super::shared::RgbRuntimeManager,
     wallet_name: &str,
 ) -> Result<balance::BalanceInfo, WalletError> {
     let descriptor = storage.load_descriptor(wallet_name)?;
@@ -313,7 +318,38 @@ async fn get_balance_for_tx(
     let network = get_network();
     let addresses_with_indices =
         AddressManager::derive_addresses(&descriptor, 0, GAP_LIMIT, network)?;
-    balance_checker.calculate_balance(&addresses_with_indices).await
+    
+    // Phase 1: Get Bitcoin balance
+    let mut balance = balance_checker.calculate_balance(&addresses_with_indices).await?;
+    
+    // Phase 2: Get RGB balance to mark occupied UTXOs
+    // This is CRITICAL - without this, genesis UTXOs can be spent by non-RGB transactions!
+    let storage_clone = storage.clone();
+    let rgb_mgr_clone = rgb_runtime_manager.clone();
+    let wallet_name_clone = wallet_name.to_string();
+    let utxos_clone = balance.utxos.clone();
+    
+    let rgb_data = tokio::task::spawn_blocking(move || {
+        super::balance_ops::get_rgb_balance_sync(&storage_clone, &rgb_mgr_clone, &wallet_name_clone, &utxos_clone)
+    })
+    .await
+    .map_err(|e| WalletError::Internal(format!("Get RGB balance task panicked: {}", e)))?;
+    
+    // Phase 3: Merge RGB data to mark occupied UTXOs
+    if let Ok(rgb_data) = rgb_data {
+        for utxo in &mut balance.utxos {
+            let key = format!("{}:{}", utxo.txid, utxo.vout);
+            if let Some(assets) = rgb_data.utxo_assets.get(&key) {
+                utxo.bound_assets = assets.clone();
+                utxo.is_occupied = !assets.is_empty();
+            }
+        }
+        balance.known_contracts = rgb_data.known_contracts;
+    } else {
+        log::warn!("Failed to get RGB balance for transaction - proceeding with Bitcoin-only balance (RGB UTXOs may be at risk!)");
+    }
+    
+    Ok(balance)
 }
 
 /// Derive private key for a specific address index

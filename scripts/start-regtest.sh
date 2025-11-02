@@ -44,7 +44,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BITCOIN_DATADIR="$PROJECT_ROOT/.bitcoin"
 ELECTRS_DIR="$PROJECT_ROOT/electrs"
 ELECTRS_DB="$PROJECT_ROOT/.electrs_db"

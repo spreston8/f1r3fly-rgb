@@ -174,7 +174,7 @@ impl WalletManager {
         name: &str,
         request: CreateUtxoRequest,
     ) -> Result<CreateUtxoResult, WalletError> {
-        super::bitcoin_ops::create_utxo(&self.storage, &self.balance_checker, name, request).await
+        super::bitcoin_ops::create_utxo(&self.storage, &self.balance_checker, &self.rgb_runtime_manager, name, request).await
     }
 
     pub async fn unlock_utxo(
@@ -182,7 +182,7 @@ impl WalletManager {
         name: &str,
         request: UnlockUtxoRequest,
     ) -> Result<UnlockUtxoResult, WalletError> {
-        super::bitcoin_ops::unlock_utxo(&self.storage, &self.balance_checker, name, request).await
+        super::bitcoin_ops::unlock_utxo(&self.storage, &self.balance_checker, &self.rgb_runtime_manager, name, request).await
     }
 
     pub async fn send_bitcoin(
@@ -190,7 +190,7 @@ impl WalletManager {
         name: &str,
         request: SendBitcoinRequest,
     ) -> Result<SendBitcoinResponse, WalletError> {
-        super::bitcoin_ops::send_bitcoin(&self.storage, &self.balance_checker, name, request).await
+        super::bitcoin_ops::send_bitcoin(&self.storage, &self.balance_checker, &self.rgb_runtime_manager, name, request).await
     }
 
     // ============================================================================
