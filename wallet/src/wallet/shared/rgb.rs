@@ -260,15 +260,6 @@ pub struct IssueAssetResponse {
     pub genesis_seal: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IssueAssetResponseWithFirefly {
-    pub contract_id: String,
-    pub genesis_seal: String,
-    pub firefly_deploy_id: String,
-    pub firefly_block_hash: String,
-    pub firefly_contract_data: serde_json::Value,
-}
-
 // Helper: Parse UTXO outpoint
 fn parse_outpoint(utxo_str: &str) -> Result<Outpoint, crate::error::WalletError> {
     let parts: Vec<&str> = utxo_str.split(':').collect();

@@ -125,16 +125,6 @@ pub struct DeleteWalletResponse {
     pub status: String,
 }
 
-// Firefly integration types
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FireflyNodeStatus {
-    pub node_connected: bool,
-    pub node_url: String,
-    pub peers: Option<u64>,
-    pub version: Option<String>,
-    pub message: String,
-}
-
 // Wallet management result types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletInfo {
@@ -176,7 +166,7 @@ pub struct SyncResult {
     pub new_transactions: usize,
 }
 
-// Bitcoin operation result types  
+// Bitcoin operation result types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateUtxoResult {
     pub txid: String,

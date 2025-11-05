@@ -1,12 +1,11 @@
+use super::shared::rgb::{IssueAssetRequest, IssueAssetResponse};
 /// Wallet Manager - Orchestration Layer
-/// 
+///
 /// Coordinates all wallet operations by delegating to specialized operation modules.
 use super::shared::*;
-use super::shared::rgb::{IssueAssetRequest, IssueAssetResponse};
 use crate::api::types::*;
 use crate::config::WalletConfig;
 use crate::error::WalletError;
-use crate::firefly::FireflyClient;
 use std::str::FromStr;
 
 pub struct WalletManager {
@@ -15,7 +14,6 @@ pub struct WalletManager {
     balance_checker: BalanceChecker,
     // Ephemeral runtime creation (matches RGB CLI architecture)
     rgb_runtime_manager: RgbRuntimeManager,
-    pub firefly_client: Option<FireflyClient>,
 }
 
 impl WalletManager {
@@ -26,26 +24,19 @@ impl WalletManager {
     pub fn new() -> Self {
         // Load configuration from environment
         let config = WalletConfig::from_env();
-        
+
         let storage = Storage::new();
         let rgb_runtime_manager = RgbRuntimeManager::new(
             storage.base_dir().clone(),
             config.bpstd_network,
             config.esplora_url.clone(),
         );
-        
-        // Initialize Firefly client from config
-        let firefly_client = Some(FireflyClient::new(
-            &config.firefly_host,
-            config.firefly_grpc_port,
-        ));
-        
+
         Self {
             config: config.clone(),
             storage,
             balance_checker: BalanceChecker::new(config.esplora_url.clone()),
             rgb_runtime_manager,
-            firefly_client,
         }
     }
 
@@ -53,22 +44,18 @@ impl WalletManager {
     pub fn new_with_storage(storage: Storage) -> Self {
         // Load configuration from environment (allows test to set env vars)
         let config = WalletConfig::from_env();
-        
+
         let rgb_runtime_manager = RgbRuntimeManager::new(
             storage.base_dir().clone(),
             config.bpstd_network,
             config.esplora_url.clone(),
         );
-        
-        // No Firefly client in tests
-        let firefly_client = None;
-        
+
         Self {
             config: config.clone(),
             storage,
             balance_checker: BalanceChecker::new(config.esplora_url.clone()),
             rgb_runtime_manager,
-            firefly_client,
         }
     }
 
@@ -125,19 +112,16 @@ impl WalletManager {
 
     pub async fn get_balance(&self, name: &str) -> Result<balance::BalanceInfo, WalletError> {
         // Phase 1: Get Bitcoin balance (async HTTP)
-        let mut balance = super::balance_ops::get_bitcoin_balance(
-            &self.storage,
-            &self.balance_checker,
-            name,
-        )
-        .await?;
-        
+        let mut balance =
+            super::balance_ops::get_bitcoin_balance(&self.storage, &self.balance_checker, name)
+                .await?;
+
         // Phase 2: Get RGB balance (spawn_blocking for FileHolder operations)
         let storage = self.storage.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let name_clone = name.to_string();
         let utxos_clone = balance.utxos.clone();
-        
+
         let rgb_data = tokio::task::spawn_blocking(move || {
             super::balance_ops::get_rgb_balance_sync(&storage, &rgb_mgr, &name_clone, &utxos_clone)
         })
@@ -147,7 +131,7 @@ impl WalletManager {
             log::error!("Failed to get RGB balance for wallet {}: {:?}", name, e);
             e
         })?;
-        
+
         // Phase 3: Merge RGB data into balance
         balance.known_contracts = rgb_data.known_contracts;
         for utxo in &mut balance.utxos {
@@ -174,7 +158,14 @@ impl WalletManager {
         name: &str,
         request: CreateUtxoRequest,
     ) -> Result<CreateUtxoResult, WalletError> {
-        super::bitcoin_ops::create_utxo(&self.storage, &self.balance_checker, &self.rgb_runtime_manager, name, request).await
+        super::bitcoin_ops::create_utxo(
+            &self.storage,
+            &self.balance_checker,
+            &self.rgb_runtime_manager,
+            name,
+            request,
+        )
+        .await
     }
 
     pub async fn unlock_utxo(
@@ -182,7 +173,14 @@ impl WalletManager {
         name: &str,
         request: UnlockUtxoRequest,
     ) -> Result<UnlockUtxoResult, WalletError> {
-        super::bitcoin_ops::unlock_utxo(&self.storage, &self.balance_checker, &self.rgb_runtime_manager, name, request).await
+        super::bitcoin_ops::unlock_utxo(
+            &self.storage,
+            &self.balance_checker,
+            &self.rgb_runtime_manager,
+            name,
+            request,
+        )
+        .await
     }
 
     pub async fn send_bitcoin(
@@ -190,7 +188,14 @@ impl WalletManager {
         name: &str,
         request: SendBitcoinRequest,
     ) -> Result<SendBitcoinResponse, WalletError> {
-        super::bitcoin_ops::send_bitcoin(&self.storage, &self.balance_checker, &self.rgb_runtime_manager, name, request).await
+        super::bitcoin_ops::send_bitcoin(
+            &self.storage,
+            &self.balance_checker,
+            &self.rgb_runtime_manager,
+            name,
+            request,
+        )
+        .await
     }
 
     // ============================================================================
@@ -206,7 +211,7 @@ impl WalletManager {
         let storage = self.storage.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             Self::issue_asset_blocking(&storage, &rgb_mgr, &wallet_name, request)
         })
@@ -223,7 +228,11 @@ impl WalletManager {
         // Phase 1: Check if specific UTXO selection is requested (async operation)
         let utxo_info = match &request.utxo_selection {
             Some(UtxoSelection::Specific { txid, vout }) => {
-                log::debug!("Looking up UTXO info for specific selection: {}:{}", txid, vout);
+                log::debug!(
+                    "Looking up UTXO info for specific selection: {}:{}",
+                    txid,
+                    vout
+                );
                 Some(
                     super::rgb_transfer_ops::find_utxo_for_selection(
                         &self.storage,
@@ -237,14 +246,20 @@ impl WalletManager {
             }
             _ => None,
         };
-        
+
         // Phase 2: Generate invoice in blocking context (sync RGB operations)
         let storage = self.storage.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
-            Self::generate_rgb_invoice_blocking(&storage, &rgb_mgr, &wallet_name, request, utxo_info)
+            Self::generate_rgb_invoice_blocking(
+                &storage,
+                &rgb_mgr,
+                &wallet_name,
+                request,
+                utxo_info,
+            )
         })
         .await
         .map_err(|e| WalletError::Internal(format!("Generate invoice task panicked: {}", e)))?
@@ -262,11 +277,18 @@ impl WalletManager {
         let wallet_name = wallet_name.to_string();
         let invoice_str = invoice_str.to_string();
         let public_url = self.config.public_url.clone();
-        
+
         tokio::task::spawn_blocking(move || {
-            Self::send_transfer_blocking(&storage, &rgb_mgr, &wallet_name, &invoice_str, fee_rate_sat_vb, &public_url)
+            Self::send_transfer_blocking(
+                &storage,
+                &rgb_mgr,
+                &wallet_name,
+                &invoice_str,
+                fee_rate_sat_vb,
+                &public_url,
+            )
         })
-                .await
+        .await
         .map_err(|e| WalletError::Internal(format!("Send transfer task panicked: {}", e)))?
     }
 
@@ -279,7 +301,7 @@ impl WalletManager {
         let storage = self.storage.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             Self::accept_consignment_blocking(&storage, &rgb_mgr, &wallet_name, consignment_bytes)
         })
@@ -298,9 +320,15 @@ impl WalletManager {
         let wallet_name = wallet_name.to_string();
         let contract_id_str = contract_id_str.to_string();
         let public_url = self.config.public_url.clone();
-        
+
         tokio::task::spawn_blocking(move || {
-            Self::export_genesis_blocking(&storage, &rgb_mgr, &wallet_name, &contract_id_str, &public_url)
+            Self::export_genesis_blocking(
+                &storage,
+                &rgb_mgr,
+                &wallet_name,
+                &contract_id_str,
+                &public_url,
+            )
         })
         .await
         .map_err(|e| WalletError::Internal(format!("Export genesis task panicked: {}", e)))?
@@ -315,11 +343,11 @@ impl WalletManager {
         let storage = self.storage.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             Self::sync_rgb_runtime_blocking(&storage, &rgb_mgr, &wallet_name)
         })
-                .await
+        .await
         .map_err(|e| WalletError::Internal(format!("Sync RGB task panicked: {}", e)))?
     }
 
@@ -328,12 +356,14 @@ impl WalletManager {
         let storage = self.storage.clone();
         let rgb_mgr = self.rgb_runtime_manager.clone();
         let wallet_name = wallet_name.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             Self::sync_rgb_after_state_change_blocking(&storage, &rgb_mgr, &wallet_name)
         })
-                .await
-        .map_err(|e| WalletError::Internal(format!("Sync RGB after state change task panicked: {}", e)))?
+        .await
+        .map_err(|e| {
+            WalletError::Internal(format!("Sync RGB after state change task panicked: {}", e))
+        })?
     }
 
     // ============================================================================
@@ -349,13 +379,13 @@ impl WalletManager {
         if !storage.wallet_exists(wallet_name) {
             return Err(WalletError::WalletNotFound(wallet_name.to_string()));
         }
-        
+
         use super::shared::rgb::{RgbAssignment, RgbCreateParams, RgbIssuer};
-        use strict_types::TypeName;
         use chrono::Utc;
-        
+        use strict_types::TypeName;
+
         log::info!("Issuing RGB asset through ephemeral runtime (matches RGB CLI)");
-        
+
         // Parse genesis outpoint first
         let genesis_parts: Vec<&str> = request.genesis_utxo.split(':').collect();
         if genesis_parts.len() != 2 {
@@ -364,82 +394,94 @@ impl WalletManager {
                 request.genesis_utxo
             )));
         }
-        
-        let genesis_txid = bpstd::Txid::from_str(genesis_parts[0]).map_err(|e| {
-            WalletError::InvalidInput(format!("Invalid genesis txid: {}", e))
-        })?;
-        let genesis_vout = genesis_parts[1].parse::<u32>().map_err(|e| {
-            WalletError::InvalidInput(format!("Invalid genesis vout: {}", e))
-        })?;
-        let genesis_outpoint = bpstd::Outpoint::new(genesis_txid, bpstd::Vout::from_u32(genesis_vout));
-        
-    // Create ephemeral runtime (loads from disk, like RGB CLI)
-    log::debug!("Creating ephemeral RGB runtime for issuance");
-    let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
-        
+
+        let genesis_txid = bpstd::Txid::from_str(genesis_parts[0])
+            .map_err(|e| WalletError::InvalidInput(format!("Invalid genesis txid: {}", e)))?;
+        let genesis_vout = genesis_parts[1]
+            .parse::<u32>()
+            .map_err(|e| WalletError::InvalidInput(format!("Invalid genesis vout: {}", e)))?;
+        let genesis_outpoint =
+            bpstd::Outpoint::new(genesis_txid, bpstd::Vout::from_u32(genesis_vout));
+
+        // Create ephemeral runtime (loads from disk, like RGB CLI)
+        log::debug!("Creating ephemeral RGB runtime for issuance");
+        let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
+
         // ℹ️  NOTE: We do NOT call runtime.update() before issuance (RGB CLI doesn't either)
         // The genesis UTXO will be discovered later during payment via update()
-        
+
         {
             // 1. Load and import RGB20 issuer if needed
             let rgb_data_dir = storage.base_dir().join(wallet_name).join("rgb_data");
             let issuer_path = rgb_data_dir.join("RGB20-FNA.issuer");
-            
+
             // Ensure the issuer file exists (create if missing)
             if !issuer_path.exists() {
                 log::debug!("Creating RGB20 issuer file at: {}", issuer_path.display());
-                std::fs::write(&issuer_path, super::shared::rgb::RGB20_ISSUER_BYTES).map_err(|e| {
-                    WalletError::Rgb(format!("Failed to create RGB20 issuer file: {}", e))
-                })?;
+                std::fs::write(&issuer_path, super::shared::rgb::RGB20_ISSUER_BYTES).map_err(
+                    |e| WalletError::Rgb(format!("Failed to create RGB20 issuer file: {}", e)),
+                )?;
             }
-            
+
             let issuer = super::shared::rgb::RGB20_ISSUER.get_or_init(|| {
-                RgbIssuer::load(&issuer_path, |_, _, _| -> Result<_, std::convert::Infallible> { Ok(()) })
-                    .expect("Failed to load RGB20 issuer")
+                RgbIssuer::load(
+                    &issuer_path,
+                    |_, _, _| -> Result<_, std::convert::Infallible> { Ok(()) },
+                )
+                .expect("Failed to load RGB20 issuer")
             });
-            
+
             let codex_id = issuer.codex_id();
             log::debug!("RGB20 issuer codex ID: {}", codex_id);
-            
+
             // Import issuer if not already in contracts
             if !runtime.contracts.has_issuer(codex_id) {
                 log::debug!("Importing RGB20 issuer into runtime contracts");
-                runtime.contracts.import_issuer(issuer.clone()).map_err(|e| {
-                    WalletError::Rgb(format!("Failed to import RGB20 issuer: {:?}", e))
-                })?;
+                runtime
+                    .contracts
+                    .import_issuer(issuer.clone())
+                    .map_err(|e| {
+                        WalletError::Rgb(format!("Failed to import RGB20 issuer: {:?}", e))
+                    })?;
             }
-            
+
             // 2. Create contract params
-            log::debug!("Creating contract params for: {} ({})", request.name, request.ticker);
-            let type_name = TypeName::try_from(request.name.clone()).map_err(|e| {
-                WalletError::InvalidInput(format!("Invalid asset name: {:?}", e))
-            })?;
-            
+            log::debug!(
+                "Creating contract params for: {} ({})",
+                request.name,
+                request.ticker
+            );
+            let type_name = TypeName::try_from(request.name.clone())
+                .map_err(|e| WalletError::InvalidInput(format!("Invalid asset name: {:?}", e)))?;
+
             let mut params = RgbCreateParams::new_bitcoin_testnet(codex_id, type_name);
-            
+
             // 3. Add global state
             params = params
                 .with_global_verified("ticker", request.ticker.as_str())
                 .with_global_verified("name", request.name.as_str())
-                .with_global_verified("precision", super::shared::rgb::map_precision(request.precision))
+                .with_global_verified(
+                    "precision",
+                    super::shared::rgb::map_precision(request.precision),
+                )
                 .with_global_verified("issued", request.supply);
-            
+
             // 4. Add owned state (initial allocation at genesis UTXO)
             params.push_owned_unlocked(
                 "balance",
                 RgbAssignment::new_internal(genesis_outpoint, request.supply),
             );
-            
+
             params.timestamp = Some(Utc::now());
-            
+
             // 5. Issue through runtime - this keeps contracts in sync!
             log::debug!("Issuing contract through runtime.issue() - contracts stay in sync");
-            let contract_id = runtime.issue(params).map_err(|e| {
-                WalletError::Rgb(format!("Failed to issue contract: {:?}", e))
-            })?;
-            
+            let contract_id = runtime
+                .issue(params)
+                .map_err(|e| WalletError::Rgb(format!("Failed to issue contract: {:?}", e)))?;
+
             log::info!("✓ Contract issued through runtime: {}", contract_id);
-            
+
             // ℹ️  NOTE: Unlike our previous approach, we do NOT manually add the genesis UTXO here.
             // RGB CLI just calls runtime.issue() and lets the runtime drop.
             // The genesis outpoint is recorded internally by RGB as part of the contract state.
@@ -449,9 +491,9 @@ impl WalletManager {
             // 3. Populates the UTXO set so pay_invoice() can spend it
             //
             // Manually adding it here was interfering with RGB's internal UTXO tracking.
-            
+
             log::info!("✓ Asset issuance complete - contract state saved");
-            
+
             Ok(IssueAssetResponse {
                 contract_id: contract_id.to_string(),
                 genesis_seal: request.genesis_utxo.clone(),
@@ -508,9 +550,7 @@ impl WalletManager {
             rgb_runtime_manager,
             wallet_name,
             consignment_bytes,
-            |wn| {
-                super::sync_ops::sync_rgb_after_state_change(storage, rgb_runtime_manager, wn)
-            },
+            |wn| super::sync_ops::sync_rgb_after_state_change(storage, rgb_runtime_manager, wn),
         )
     }
 
