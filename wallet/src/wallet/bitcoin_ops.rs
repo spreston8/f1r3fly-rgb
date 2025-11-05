@@ -4,9 +4,9 @@
 
 use super::shared::*;
 use crate::api::types::{
-    CreateUtxoRequest, CreateUtxoResult,
+    CreateUtxoRequest, CreateUtxoResponse,
     SendBitcoinRequest, SendBitcoinResponse,
-    UnlockUtxoRequest, UnlockUtxoResult,
+    UnlockUtxoRequest, UnlockUtxoResponse,
 };
 use crate::config::WalletConfig;
 use crate::error::WalletError;
@@ -25,7 +25,7 @@ pub async fn create_utxo(
     rgb_runtime_manager: &super::shared::RgbRuntimeManager,
     wallet_name: &str,
     request: CreateUtxoRequest,
-) -> Result<CreateUtxoResult, WalletError> {
+) -> Result<CreateUtxoResponse, WalletError> {
     if !storage.wallet_exists(wallet_name) {
         return Err(WalletError::WalletNotFound(wallet_name.to_string()));
     }
@@ -107,7 +107,7 @@ pub async fn create_utxo(
     log::info!("UTXO created successfully: txid={}, amount={} sats, fee={} sats, address={}", 
         txid, amount_sats, fee_sats, recipient_address);
 
-    Ok(CreateUtxoResult {
+    Ok(CreateUtxoResponse {
         txid,
         amount_sats,
         fee_sats,
@@ -122,7 +122,7 @@ pub async fn unlock_utxo(
     rgb_runtime_manager: &super::shared::RgbRuntimeManager,
     wallet_name: &str,
     request: UnlockUtxoRequest,
-) -> Result<UnlockUtxoResult, WalletError> {
+) -> Result<UnlockUtxoResponse, WalletError> {
     if !storage.wallet_exists(wallet_name) {
         return Err(WalletError::WalletNotFound(wallet_name.to_string()));
     }
@@ -176,7 +176,7 @@ pub async fn unlock_utxo(
 
     storage.save_state(wallet_name, &state)?;
 
-    Ok(UnlockUtxoResult {
+    Ok(UnlockUtxoResponse {
         txid,
         recovered_sats,
         fee_sats,

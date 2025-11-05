@@ -11,6 +11,16 @@ pub struct ImportWalletRequest {
     pub mnemonic: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AddressQuery {
+    #[serde(default = "default_address_count")]
+    pub count: u32,
+}
+
+fn default_address_count() -> u32 {
+    10
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateUtxoRequest {
     pub amount_btc: Option<f64>,
@@ -164,30 +174,4 @@ pub struct SyncResult {
     pub synced_height: u64,
     pub addresses_checked: u32,
     pub new_transactions: usize,
-}
-
-// Bitcoin operation result types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateUtxoResult {
-    pub txid: String,
-    pub amount_sats: u64,
-    pub fee_sats: u64,
-    pub target_address: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnlockUtxoResult {
-    pub txid: String,
-    pub recovered_sats: u64,
-    pub fee_sats: u64,
-}
-
-// RGB operation result types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GenerateInvoiceResult {
-    pub invoice: String,
-    pub contract_id: String,
-    pub amount: Option<u64>,
-    pub seal_utxo: String,
-    pub selected_utxo: Option<UtxoInfo>,
 }

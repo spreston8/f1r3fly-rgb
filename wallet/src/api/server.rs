@@ -109,14 +109,14 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
 
     // Serve with graceful shutdown (Phase 1)
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(wallet_manager))
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
 
     Ok(())
 }
 
 /// Handle graceful shutdown signals (Ctrl+C, SIGTERM)
-async fn shutdown_signal(_manager: Arc<WalletManager>) {
+async fn shutdown_signal() {
     // Wait for SIGTERM or Ctrl+C
     let ctrl_c = async {
         tokio::signal::ctrl_c()

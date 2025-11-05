@@ -157,7 +157,7 @@ impl WalletManager {
         &self,
         name: &str,
         request: CreateUtxoRequest,
-    ) -> Result<CreateUtxoResult, WalletError> {
+    ) -> Result<CreateUtxoResponse, WalletError> {
         super::bitcoin_ops::create_utxo(
             &self.storage,
             &self.balance_checker,
@@ -172,7 +172,7 @@ impl WalletManager {
         &self,
         name: &str,
         request: UnlockUtxoRequest,
-    ) -> Result<UnlockUtxoResult, WalletError> {
+    ) -> Result<UnlockUtxoResponse, WalletError> {
         super::bitcoin_ops::unlock_utxo(
             &self.storage,
             &self.balance_checker,
@@ -224,7 +224,7 @@ impl WalletManager {
         &self,
         wallet_name: &str,
         request: GenerateInvoiceRequest,
-    ) -> Result<GenerateInvoiceResult, WalletError> {
+    ) -> Result<GenerateInvoiceResponse, WalletError> {
         // Phase 1: Check if specific UTXO selection is requested (async operation)
         let utxo_info = match &request.utxo_selection {
             Some(UtxoSelection::Specific { txid, vout }) => {
@@ -508,7 +508,7 @@ impl WalletManager {
         wallet_name: &str,
         request: GenerateInvoiceRequest,
         utxo_info: Option<crate::api::types::UtxoInfo>,
-    ) -> Result<GenerateInvoiceResult, WalletError> {
+    ) -> Result<GenerateInvoiceResponse, WalletError> {
         super::rgb_transfer_ops::generate_rgb_invoice_sync(
             storage,
             rgb_runtime_manager,

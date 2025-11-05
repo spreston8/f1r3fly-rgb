@@ -8,7 +8,7 @@
 /// - populate_psbt_bip32_derivations: Adds derivation paths to PSBT for signing
 /// - Helper functions for signing and broadcasting
 use super::shared::*;
-use crate::api::types::{GenerateInvoiceRequest, GenerateInvoiceResult, SendTransferResponse, UtxoInfo};
+use crate::api::types::{GenerateInvoiceRequest, GenerateInvoiceResponse, SendTransferResponse, UtxoInfo};
 use crate::error::WalletError;
 use bitcoin::Network;
 use std::str::FromStr;
@@ -73,7 +73,7 @@ pub fn generate_rgb_invoice_sync(
     wallet_name: &str,
     request: GenerateInvoiceRequest,
     utxo_info: Option<UtxoInfo>,
-) -> Result<GenerateInvoiceResult, WalletError> {
+) -> Result<GenerateInvoiceResponse, WalletError> {
     // Verify wallet exists
     if !storage.wallet_exists(wallet_name) {
         return Err(WalletError::WalletNotFound(wallet_name.to_string()));
@@ -189,7 +189,7 @@ pub fn generate_rgb_invoice_sync(
 
     log::info!("Invoice generated successfully: {}", seal_info);
 
-    Ok(GenerateInvoiceResult {
+    Ok(GenerateInvoiceResponse {
         invoice: invoice_str,
         contract_id: request.contract_id,
         amount: request.amount,

@@ -2,11 +2,10 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
-    api::{self, types::*},
+    api::types::*,
     wallet::{
         shared::{
             balance::BalanceInfo,
@@ -14,13 +13,6 @@ use crate::{
         },
         WalletManager,
     },
-};
-
-use super::types::{
-    AcceptConsignmentResponse, CreateUtxoRequest, CreateUtxoResponse, CreateWalletRequest,
-    DeleteWalletResponse, ExportGenesisResponse, GenerateInvoiceRequest, GenerateInvoiceResponse,
-    ImportWalletRequest, SendBitcoinRequest, SendBitcoinResponse, SendTransferRequest,
-    SendTransferResponse, UnlockUtxoRequest, UnlockUtxoResponse,
 };
 
 pub async fn create_wallet_handler(
@@ -60,16 +52,6 @@ pub async fn delete_wallet_handler(
         wallet_name: name,
         status: "deleted".to_string(),
     }))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AddressQuery {
-    #[serde(default = "default_address_count")]
-    pub count: u32,
-}
-
-fn default_address_count() -> u32 {
-    10
 }
 
 pub async fn get_addresses_handler(
@@ -118,19 +100,8 @@ pub async fn create_utxo_handler(
     Path(name): Path<String>,
     Json(req): Json<CreateUtxoRequest>,
 ) -> Result<Json<CreateUtxoResponse>, crate::error::WalletError> {
-    let manager_req = api::types::CreateUtxoRequest {
-        amount_btc: req.amount_btc,
-        fee_rate_sat_vb: req.fee_rate_sat_vb,
-    };
-
-    let result = manager.create_utxo(&name, manager_req).await?;
-
-    Ok(Json(CreateUtxoResponse {
-        txid: result.txid,
-        amount_sats: result.amount_sats,
-        fee_sats: result.fee_sats,
-        target_address: result.target_address,
-    }))
+    let result = manager.create_utxo(&name, req).await?;
+    Ok(Json(result))
 }
 
 pub async fn unlock_utxo_handler(
@@ -138,19 +109,8 @@ pub async fn unlock_utxo_handler(
     Path(name): Path<String>,
     Json(req): Json<UnlockUtxoRequest>,
 ) -> Result<Json<UnlockUtxoResponse>, crate::error::WalletError> {
-    let manager_req = api::types::UnlockUtxoRequest {
-        txid: req.txid,
-        vout: req.vout,
-        fee_rate_sat_vb: req.fee_rate_sat_vb,
-    };
-
-    let result = manager.unlock_utxo(&name, manager_req).await?;
-
-    Ok(Json(UnlockUtxoResponse {
-        txid: result.txid,
-        recovered_sats: result.recovered_sats,
-        fee_sats: result.fee_sats,
-    }))
+    let result = manager.unlock_utxo(&name, req).await?;
+    Ok(Json(result))
 }
 
 pub async fn send_bitcoin_handler(
@@ -158,20 +118,8 @@ pub async fn send_bitcoin_handler(
     Path(name): Path<String>,
     Json(req): Json<SendBitcoinRequest>,
 ) -> Result<Json<SendBitcoinResponse>, crate::error::WalletError> {
-    let manager_req = api::types::SendBitcoinRequest {
-        to_address: req.to_address,
-        amount_sats: req.amount_sats,
-        fee_rate_sat_vb: req.fee_rate_sat_vb,
-    };
-
-    let result = manager.send_bitcoin(&name, manager_req).await?;
-
-    Ok(Json(SendBitcoinResponse {
-        txid: result.txid,
-        amount_sats: result.amount_sats,
-        fee_sats: result.fee_sats,
-        to_address: result.to_address,
-    }))
+    let result = manager.send_bitcoin(&name, req).await?;
+    Ok(Json(result))
 }
 
 pub async fn issue_asset_handler(
@@ -189,16 +137,8 @@ pub async fn generate_invoice_handler(
     Path(name): Path<String>,
     Json(req): Json<GenerateInvoiceRequest>,
 ) -> Result<Json<GenerateInvoiceResponse>, crate::error::WalletError> {
-    // Generate invoice (pass the full request with utxo_selection and nonce)
     let result = manager.generate_rgb_invoice(&name, req).await?;
-
-    Ok(Json(GenerateInvoiceResponse {
-        invoice: result.invoice,
-        contract_id: result.contract_id,
-        amount: result.amount,
-        seal_utxo: result.seal_utxo,
-        selected_utxo: result.selected_utxo,
-    }))
+    Ok(Json(result))
 }
 
 pub async fn send_transfer_handler(
