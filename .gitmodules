@@ -25,7 +25,7 @@
 [submodule "f1r3node"]
 	path = f1r3node
 	url = git@github.com:F1R3FLY-io/f1r3node.git
-	branch = rust/dev
+	branch = main
 [submodule "electrs"]
 	path = electrs
 	url = git@github.com:Blockstream/electrs.git
@@ -33,3 +33,15 @@
 [submodule "esplora"]
 	path = esplora
 	url = git@github.com:Blockstream/esplora.git
+[submodule "sonare"]
+	path = sonare
+	url = git@github.com:AluVM/sonare.git
+[submodule "aluvm"]
+	path = aluvm
+	url = git@github.com:AluVM/aluvm.git
+[submodule "sonic"]
+	path = sonic
+	url = git@github.com:AluVM/sonic.git
+[submodule "ultrasonic"]
+	path = ultrasonic
+	url = git@github.com:AluVM/ultrasonic.git
