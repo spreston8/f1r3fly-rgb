@@ -36,11 +36,6 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
     };
 
     let app = Router::new()
-        // Firefly integration
-        .route(
-            "/api/firefly/status",
-            get(handlers::get_firefly_status_handler),
-        )
         // Wallet routes
         .route("/api/wallet/create", post(handlers::create_wallet_handler))
         .route("/api/wallet/import", post(handlers::import_wallet_handler))
@@ -81,10 +76,6 @@ pub async fn start_server(addr: &str) -> anyhow::Result<()> {
         .route(
             "/api/wallet/:name/issue-asset",
             post(handlers::issue_asset_handler),
-        )
-        .route(
-            "/api/wallet/:name/issue-asset-firefly",
-            post(handlers::issue_asset_with_firefly_handler),
         )
         .route(
             "/api/wallet/:name/generate-invoice",
