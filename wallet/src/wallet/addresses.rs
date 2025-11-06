@@ -1,17 +1,11 @@
-/// Address management operations
-/// 
-/// Handles address derivation and queries.
+//! Address management operations
 
-use super::shared::*;
 use crate::api::types::{AddressInfo, NextAddressInfo};
-use crate::config::WalletConfig;
 use crate::error::WalletError;
-use bitcoin::Network;
+use crate::storage::Storage;
 
-/// Get Bitcoin network from config
-fn get_network() -> Network {
-    WalletConfig::from_env().bitcoin_network
-}
+use crate::wallet::AddressManager;
+use crate::bitcoin::network::get_network;
 
 /// Get multiple derived addresses for a wallet
 pub fn get_addresses(

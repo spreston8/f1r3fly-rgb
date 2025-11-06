@@ -52,7 +52,7 @@ mod common;
 
 use std::time::Instant;
 use tokio::signal;
-use wallet::wallet::shared::rgb::IssueAssetRequest;
+use wallet::rgb::asset::IssueAssetRequest;
 use wallet::api::types::{CreateUtxoRequest, GenerateInvoiceRequest, SendBitcoinRequest};
 
 // Import test utilities

@@ -8,6 +8,7 @@ use std::str::FromStr;
 pub struct KeyManager;
 
 impl KeyManager {
+    /// Generate a new random wallet with mnemonic and keys
     pub fn generate() -> Result<WalletKeys, crate::error::WalletError> {
         let entropy = rand::random::<[u8; 16]>();
 
@@ -17,6 +18,7 @@ impl KeyManager {
         Self::derive_keys(mnemonic)
     }
 
+    /// Import a wallet from an existing mnemonic phrase
     pub fn from_mnemonic(words: &str) -> Result<WalletKeys, crate::error::WalletError> {
         let mnemonic = Mnemonic::parse(words)
             .map_err(|e| crate::error::WalletError::InvalidMnemonic(e.to_string()))?;
@@ -24,6 +26,7 @@ impl KeyManager {
         Self::derive_keys(mnemonic)
     }
 
+    /// Derive BIP84 keys and descriptor from a mnemonic
     fn derive_keys(mnemonic: Mnemonic) -> Result<WalletKeys, crate::error::WalletError> {
         // Load network from config
         let config = crate::config::WalletConfig::from_env();
@@ -58,6 +61,7 @@ impl KeyManager {
         })
     }
 
+    /// Create a BIP84 descriptor string with the given xpub and fingerprint
     fn create_descriptor(xpub: &Xpub, fingerprint: Fingerprint) -> String {
         format!("[{:08x}/84h/1h/0h]{}/<0;1>/*", fingerprint, xpub)
     }
@@ -71,3 +75,4 @@ pub struct WalletKeys {
     pub fingerprint: String,
     pub network: Network,
 }
+

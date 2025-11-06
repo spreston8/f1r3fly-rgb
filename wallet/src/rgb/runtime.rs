@@ -17,6 +17,7 @@ pub struct RgbRuntimeManager {
 }
 
 impl RgbRuntimeManager {
+    /// Create a new RGB runtime manager with the specified base path, network, and Esplora URL
     pub fn new(base_path: PathBuf, network: Network, esplora_url: String) -> Self {
         Self {
             base_path,
@@ -59,11 +60,13 @@ impl RgbRuntimeManager {
         Ok(runtime)
     }
 
+    /// Create a multi-resolver for blockchain data using the configured Esplora endpoint
     fn create_resolver(&self) -> Result<MultiResolver, crate::error::WalletError> {
         MultiResolver::new_esplora(&self.esplora_url)
             .map_err(|e| crate::error::WalletError::Network(e.to_string()))
     }
 
+    /// Create a FileHolder for the specified wallet using its descriptor
     fn create_file_holder(
         &self,
         wallet_name: &str,
@@ -84,6 +87,7 @@ impl RgbRuntimeManager {
             .map_err(|e| crate::error::WalletError::Rgb(e.to_string()))
     }
 
+    /// Convert a BIP84 descriptor string to an RGB descriptor
     fn descriptor_to_rgb(&self, descriptor: &str) -> Result<RgbDescr, crate::error::WalletError> {
         let xpub = XpubDerivable::from_str(descriptor)
             .map_err(|e| crate::error::WalletError::InvalidDescriptor(e.to_string()))?;
@@ -93,6 +97,7 @@ impl RgbRuntimeManager {
         Ok(RgbDescr::new_unfunded(Wpkh::from(xpub), noise))
     }
 
+    /// Load the RGB contracts stockpile for the specified wallet
     fn load_contracts(
         &self,
         wallet_name: &str,
@@ -101,11 +106,9 @@ impl RgbRuntimeManager {
         
         // Create rgb_data directory if it doesn't exist (for wallets without RGB assets yet)
         if !rgb_data_dir.exists() {
-            log::debug!("Creating RGB data directory for wallet: {}", wallet_name);
             std::fs::create_dir_all(&rgb_data_dir).map_err(|e| {
                 crate::error::WalletError::Rgb(format!("Failed to create RGB data directory: {:?}", e))
             })?;
-            log::debug!("RGB data directory created successfully");
         }
         
         let stockpile =

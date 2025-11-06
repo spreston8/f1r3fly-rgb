@@ -1,16 +1,13 @@
-/// Synchronization operations
-/// 
-/// Handles wallet and RGB runtime synchronization with blockchain.
+//! Blockchain synchronization operations
 
-use super::shared::*;
 use crate::api::types::SyncResult;
 use crate::error::WalletError;
-use bitcoin::Network;
+use crate::storage::Storage;
 
-/// Get Bitcoin network from config
-fn get_network() -> Network {
-    crate::config::WalletConfig::from_env().bitcoin_network
-}
+use crate::bitcoin::network::get_network;
+use crate::bitcoin::BalanceChecker;
+use crate::rgb::RgbRuntimeManager;
+use crate::wallet::AddressManager;
 
 /// Sync wallet with blockchain
 pub async fn sync_wallet(
@@ -29,15 +26,12 @@ pub async fn sync_wallet(
 
     const GAP_LIMIT: u32 = 20;
     let network = get_network();
-    let addresses =
-        AddressManager::derive_addresses(&descriptor, 0, GAP_LIMIT, network)?;
+    let addresses = AddressManager::derive_addresses(&descriptor, 0, GAP_LIMIT, network)?;
 
     let mut new_transactions = 0;
 
     for (index, address) in addresses {
-        let utxos = balance_checker
-            .get_address_utxos(&address, index)
-            .await?;
+        let utxos = balance_checker.get_address_utxos(&address, index).await?;
         if !utxos.is_empty() && !state.used_addresses.contains(&index) {
             state.used_addresses.push(index);
             new_transactions += utxos.len();
@@ -60,11 +54,17 @@ pub fn sync_rgb_runtime(
     rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
 ) -> Result<(), WalletError> {
-    sync_rgb_internal(storage, rgb_runtime_manager, wallet_name, 1, "Syncing RGB runtime")
+    sync_rgb_internal(
+        storage,
+        rgb_runtime_manager,
+        wallet_name,
+        1,
+        "Syncing RGB runtime",
+    )
 }
 
 /// Internal RGB sync method with configurable confirmations (using ephemeral runtime like RGB CLI)
-pub(crate) fn sync_rgb_internal(
+pub fn sync_rgb_internal(
     storage: &Storage,
     rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
@@ -72,7 +72,7 @@ pub(crate) fn sync_rgb_internal(
     log_prefix: &str,
 ) -> Result<(), WalletError> {
     use std::time::Instant;
-    
+
     if !storage.wallet_exists(wallet_name) {
         return Err(WalletError::WalletNotFound(wallet_name.to_string()));
     }
@@ -83,10 +83,8 @@ pub(crate) fn sync_rgb_internal(
         format!("{} confirmations", confirmations)
     };
     log::info!("{} ({})", log_prefix, conf_str);
-    log::debug!("Starting blockchain scan via Esplora API (this may take 10-15 seconds)...");
 
-    // Create ephemeral runtime and sync (matches RGB CLI)
-    log::debug!("Creating ephemeral RGB runtime for sync operation");
+    // Create ephemeral runtime and sync
     let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
 
     let start = Instant::now();
@@ -98,18 +96,26 @@ pub(crate) fn sync_rgb_internal(
 
     log::info!("RGB state synced in {:?}", duration);
     if duration.as_secs() > 5 {
-        log::warn!("Sync took longer than expected ({:?}). This is due to sequential Esplora API queries.", duration);
+        log::warn!(
+            "Sync took longer than expected ({:?}). This is due to sequential Esplora API queries.",
+            duration
+        );
     }
     Ok(())
     // Runtime drops here → FileHolder::drop() auto-saves to disk
 }
 
-/// Sync RGB runtime after a state-changing operation (using ephemeral runtime like RGB CLI)
-pub(crate) fn sync_rgb_after_state_change(
+/// Sync RGB runtime after a state-changing operation
+pub fn sync_rgb_after_state_change(
     storage: &Storage,
     rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
 ) -> Result<(), WalletError> {
-    sync_rgb_internal(storage, rgb_runtime_manager, wallet_name, 1, "Syncing RGB runtime after state change")
+    sync_rgb_internal(
+        storage,
+        rgb_runtime_manager,
+        wallet_name,
+        1,
+        "Syncing RGB runtime after state change",
+    )
 }
-

@@ -7,6 +7,7 @@ use std::str::FromStr;
 pub struct AddressManager;
 
 impl AddressManager {
+    /// Derive a single P2WPKH address from a BIP84 descriptor at the specified index
     pub fn derive_address(
         descriptor: &str,
         index: u32,
@@ -32,6 +33,7 @@ impl AddressManager {
         Ok(address)
     }
 
+    /// Derive multiple addresses from a descriptor, returning (index, address) pairs
     pub fn derive_addresses(
         descriptor: &str,
         start: u32,
@@ -49,6 +51,7 @@ impl AddressManager {
         Ok(addresses)
     }
 
+    /// Find the next unused address index by scanning for gaps in the used indices list
     pub fn find_next_unused(
         descriptor: &str,
         used_indices: &[u32],
@@ -64,6 +67,7 @@ impl AddressManager {
         Ok((index, address))
     }
 
+    /// Extract the xpub/tpub from a BIP84 descriptor string
     fn extract_xpub(descriptor: &str) -> Result<Xpub, crate::error::WalletError> {
         let start = descriptor
             .find("tpub")

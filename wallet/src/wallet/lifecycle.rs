@@ -1,10 +1,12 @@
-/// Wallet lifecycle operations
-///
-/// Handles wallet creation, import, and listing.
-use super::shared::*;
+//! Wallet lifecycle operations (create, import, list, delete)
+
 use crate::api::types::{WalletInfo, WalletMetadata};
 use crate::error::WalletError;
+use crate::storage::{Storage, Metadata, KeyManager};
 use chrono::Utc;
+
+// Import AddressManager from old location for now
+use crate::wallet::AddressManager;
 
 /// Create a new wallet with a generated mnemonic
 pub fn create_wallet(storage: &Storage, name: &str) -> Result<WalletInfo, WalletError> {
@@ -106,3 +108,4 @@ pub fn delete_wallet(storage: &Storage, name: &str) -> Result<(), WalletError> {
     
     Ok(())
 }
+

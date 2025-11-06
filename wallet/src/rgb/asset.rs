@@ -20,7 +20,7 @@ use strict_encoding::TypeName;
 pub use rgb::{Assignment as RgbAssignment, CreateParams as RgbCreateParams, Issuer as RgbIssuer};
 
 // Embed RGB20 schema at compile time (bundled in binary from wallet/assets/)
-pub(crate) const RGB20_ISSUER_BYTES: &[u8] = include_bytes!("../../../assets/RGB20-FNA.issuer");
+pub(crate) const RGB20_ISSUER_BYTES: &[u8] = include_bytes!("../../assets/RGB20-FNA.issuer");
 
 // Cache issuer (loaded once)
 pub(crate) static RGB20_ISSUER: OnceLock<Issuer> = OnceLock::new();
@@ -38,6 +38,7 @@ pub struct RgbManager {
 }
 
 impl RgbManager {
+    /// Create a new RGB manager with the specified data directory
     pub fn new(data_dir: PathBuf) -> Result<Self, crate::error::WalletError> {
         // Ensure RGB data directory exists
         fs::create_dir_all(&data_dir).map_err(|e| {
@@ -55,6 +56,7 @@ impl RgbManager {
         Ok(Self { data_dir })
     }
 
+    /// Load the RGB contracts stockpile for this wallet
     fn load_contracts(
         &self,
     ) -> Result<Contracts<StockpileDir<TxoSeal>>, crate::error::WalletError> {
@@ -66,6 +68,7 @@ impl RgbManager {
         Ok(Contracts::load(stockpile))
     }
 
+    /// Check if a UTXO is occupied by any RGB contract state
     pub fn check_utxo_occupied(
         &self,
         txid: bitcoin::Txid,
@@ -96,6 +99,7 @@ impl RgbManager {
         Ok(false)
     }
 
+    /// Get all RGB assets bound to a specific UTXO
     pub fn get_bound_assets(
         &self,
         txid: bitcoin::Txid,
@@ -150,6 +154,7 @@ impl RgbManager {
         Ok(assets)
     }
 
+    /// Load the RGB20 issuer from the cached static instance
     fn load_issuer(&self) -> Result<&'static Issuer, crate::error::WalletError> {
         RGB20_ISSUER.get_or_init(|| {
             let issuer_path = self.data_dir.join("RGB20-FNA.issuer");
@@ -160,40 +165,29 @@ impl RgbManager {
         Ok(RGB20_ISSUER.get().unwrap())
     }
 
+    /// Issue a new RGB20 asset with the specified parameters
     pub fn issue_rgb20_asset(
         &self,
         request: IssueAssetRequest,
     ) -> Result<IssueAssetResponse, crate::error::WalletError> {
-        log::debug!("Loading RGB20 issuer from cached data");
         // 1. Load issuer (cached)
         let issuer = self.load_issuer()?;
         let codex_id = issuer.codex_id();
-        log::debug!("RGB20 issuer loaded, codex ID: {}", codex_id);
 
-        log::debug!("Loading contracts stockpile");
         // 2. Load contracts and ensure issuer is imported
         let mut contracts = self.load_contracts()?;
 
         // Import issuer if not already registered (only happens once)
         if !contracts.has_issuer(codex_id) {
-            log::debug!("Importing RGB20 issuer into stockpile (first-time setup)");
             contracts.import_issuer(issuer.clone()).map_err(|e| {
                 crate::error::WalletError::Rgb(format!("Failed to import RGB20 issuer: {:?}", e))
             })?;
-        } else {
-            log::debug!("RGB20 issuer already imported");
         }
 
         // 3. Parse genesis outpoint
-        log::debug!("Parsing genesis UTXO: {}", request.genesis_utxo);
         let outpoint = parse_outpoint(&request.genesis_utxo)?;
 
         // 4. Create params with TypeName
-        log::debug!(
-            "Creating contract params for: {} ({})",
-            request.name,
-            request.ticker
-        );
         let type_name = TypeName::try_from(request.name.clone()).map_err(|e| {
             crate::error::WalletError::InvalidInput(format!("Invalid asset name: {:?}", e))
         })?;
@@ -205,11 +199,6 @@ impl RgbManager {
             .with_global_verified("name", request.name.as_str())
             .with_global_verified("precision", map_precision(request.precision))
             .with_global_verified("issued", request.supply);
-        log::debug!(
-            "Contract params configured - Supply: {}, Precision: {}",
-            request.supply,
-            request.precision
-        );
 
         // 6. Add owned state (initial allocation)
         params.push_owned_unlocked(
@@ -221,7 +210,6 @@ impl RgbManager {
         params.timestamp = Some(Utc::now());
 
         // 8. Issue contract
-        log::debug!("Issuing contract to stockpile (local operation)");
         let noise_engine = self.create_noise_engine();
         let contract_id = contracts
             .issue(params.transform(noise_engine))
@@ -230,7 +218,6 @@ impl RgbManager {
             })?;
 
         log::info!("Contract issued locally to stockpile: {}", contract_id);
-        log::debug!("Genesis seal: {}", request.genesis_utxo);
 
         Ok(IssueAssetResponse {
             contract_id: contract_id.to_string(),
@@ -238,6 +225,7 @@ impl RgbManager {
         })
     }
 
+    /// Create a deterministic noise engine for contract issuance
     fn create_noise_engine(&self) -> Sha256 {
         let mut noise = Sha256::new();
         noise.input_raw(b"wallet_noise");
@@ -260,7 +248,7 @@ pub struct IssueAssetResponse {
     pub genesis_seal: String,
 }
 
-// Helper: Parse UTXO outpoint
+/// Parse a UTXO string in "txid:vout" format into an RGB Outpoint
 fn parse_outpoint(utxo_str: &str) -> Result<Outpoint, crate::error::WalletError> {
     let parts: Vec<&str> = utxo_str.split(':').collect();
     if parts.len() != 2 {
@@ -278,7 +266,7 @@ fn parse_outpoint(utxo_str: &str) -> Result<Outpoint, crate::error::WalletError>
     Ok(Outpoint::new(txid, Vout::from_u32(vout)))
 }
 
-// Helper: Map precision number to string
+/// Map precision value (0-10) to the corresponding RGB20 precision string
 pub fn map_precision(precision: u8) -> &'static str {
     match precision {
         0 => "indivisible",

@@ -1,8 +1,8 @@
 use bpstd::Network;
 use std::path::PathBuf;
 use std::time::Instant;
-use wallet::wallet::shared::keys::KeyManager;
-use wallet::wallet::shared::rgb_runtime::RgbRuntimeManager;
+use wallet::storage::KeyManager;
+use wallet::rgb::runtime::RgbRuntimeManager;
 
 /// Test helper that ensures cleanup of test directories
 /// Uses RAII pattern - cleanup happens when this struct is dropped

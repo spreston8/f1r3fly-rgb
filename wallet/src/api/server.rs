@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
 use super::handlers;
-use crate::wallet::manager::WalletManager;
+use crate::manager::WalletManager;
 
 pub async fn start_server(addr: &str) -> anyhow::Result<()> {
     let wallet_manager = Arc::new(WalletManager::new());

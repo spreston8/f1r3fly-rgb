@@ -1,8 +1,8 @@
 use bip39::Mnemonic;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+
+use super::models::{Metadata, WalletState};
 
 #[derive(Clone)]
 pub struct Storage {
@@ -10,6 +10,7 @@ pub struct Storage {
 }
 
 impl Storage {
+    /// Create a new storage instance with the default base directory ("./wallets")
     pub fn new() -> Self {
         Self {
             base_path: PathBuf::from("./wallets"),
@@ -18,17 +19,20 @@ impl Storage {
 
     /// Create storage with custom base directory (for testing)
     pub fn new_with_base_dir(base_path: PathBuf) -> Self {
-        Self { base_path }
+        Self { base_path         }
     }
 
+    /// Get the base directory path for wallet storage
     pub fn base_dir(&self) -> &PathBuf {
         &self.base_path
     }
 
+    /// Get the directory path for a specific wallet
     fn wallet_dir(&self, name: &str) -> PathBuf {
         self.base_path.join(name)
     }
 
+    /// Create a new wallet directory structure
     pub fn create_wallet(&self, name: &str) -> Result<(), crate::error::StorageError> {
         fs::create_dir_all(&self.base_path)?;
         let wallet_dir = self.wallet_dir(name);
@@ -36,10 +40,12 @@ impl Storage {
         Ok(())
     }
 
+    /// Check if a wallet with the given name exists
     pub fn wallet_exists(&self, name: &str) -> bool {
         self.wallet_dir(name).exists()
     }
 
+    /// Save wallet metadata to disk
     pub fn save_metadata(
         &self,
         name: &str,
@@ -51,6 +57,7 @@ impl Storage {
         Ok(())
     }
 
+    /// Load wallet metadata from disk
     pub fn load_metadata(&self, name: &str) -> Result<Metadata, crate::error::StorageError> {
         let path = self.wallet_dir(name).join("metadata.json");
         if !path.exists() {
@@ -63,6 +70,7 @@ impl Storage {
         Ok(meta)
     }
 
+    /// Save wallet mnemonic phrase to disk
     pub fn save_mnemonic(
         &self,
         name: &str,
@@ -73,6 +81,7 @@ impl Storage {
         Ok(())
     }
 
+    /// Load wallet mnemonic phrase from disk
     pub fn load_mnemonic(&self, name: &str) -> Result<Mnemonic, crate::error::StorageError> {
         let path = self.wallet_dir(name).join("mnemonic.txt");
         if !path.exists() {
@@ -90,6 +99,7 @@ impl Storage {
         Ok(mnemonic)
     }
 
+    /// Save wallet descriptor to disk
     pub fn save_descriptor(
         &self,
         name: &str,
@@ -100,6 +110,7 @@ impl Storage {
         Ok(())
     }
 
+    /// Load wallet descriptor from disk
     pub fn load_descriptor(&self, name: &str) -> Result<String, crate::error::StorageError> {
         let path = self.wallet_dir(name).join("descriptor.txt");
         if !path.exists() {
@@ -111,6 +122,7 @@ impl Storage {
         Ok(descriptor.trim().to_string())
     }
 
+    /// Save wallet state (address indices, used addresses) to disk
     pub fn save_state(
         &self,
         name: &str,
@@ -122,6 +134,7 @@ impl Storage {
         Ok(())
     }
 
+    /// Load wallet state from disk, or return default state if file doesn't exist
     pub fn load_state(&self, name: &str) -> Result<WalletState, crate::error::StorageError> {
         let path = self.wallet_dir(name).join("state.json");
         if !path.exists() {
@@ -132,6 +145,7 @@ impl Storage {
         Ok(state)
     }
 
+    /// List all wallet names in the storage directory
     pub fn list_wallets(&self) -> Result<Vec<String>, crate::error::StorageError> {
         if !self.base_path.exists() {
             return Ok(Vec::new());
@@ -152,6 +166,7 @@ impl Storage {
         Ok(wallets)
     }
 
+    /// Delete a wallet and all its associated data from disk
     pub fn delete_wallet(&self, name: &str) -> Result<(), crate::error::StorageError> {
         let wallet_dir = self.wallet_dir(name);
         
@@ -169,28 +184,3 @@ impl Storage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Metadata {
-    pub name: String,
-    pub created_at: DateTime<Utc>,
-    pub network: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletState {
-    pub last_synced_height: Option<u64>,
-    pub used_addresses: Vec<u32>,
-    pub public_address_index: u32,
-    pub internal_next_index: u32,
-}
-
-impl Default for WalletState {
-    fn default() -> Self {
-        Self {
-            last_synced_height: None,
-            used_addresses: Vec::new(),
-            public_address_index: 0,
-            internal_next_index: 1,
-        }
-    }
-}

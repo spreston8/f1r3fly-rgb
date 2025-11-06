@@ -1,5 +1,6 @@
 use bitcoin::Address;
 use serde::{Deserialize, Serialize};
+use crate::rgb::asset::BoundAsset;
 
 pub struct BalanceChecker {
     client: reqwest::Client,
@@ -15,6 +16,7 @@ impl BalanceChecker {
         }
     }
 
+    /// Fetch all UTXOs for a given address from the Esplora API
     pub async fn get_address_utxos(
         &self,
         address: &Address,
@@ -71,6 +73,7 @@ impl BalanceChecker {
         Ok(utxos)
     }
 
+    /// Get the current blockchain tip height from the Esplora API
     pub async fn get_tip_height(&self) -> Result<u64, crate::error::WalletError> {
         let url = format!("{}/blocks/tip/height", self.base_url);
 
@@ -93,6 +96,7 @@ impl BalanceChecker {
         Ok(height)
     }
 
+    /// Calculate total balance across multiple addresses and collect all UTXOs
     pub async fn calculate_balance(
         &self,
         addresses_with_indices: &[(u32, Address)],
@@ -160,7 +164,7 @@ impl BalanceChecker {
             utxo_count: all_utxos.len(),
             utxos: all_utxos,
             known_contracts: Vec::new(),
-            display_address: String::new(), // Set by caller in balance_ops
+            display_address: String::new(),
         })
     }
 }
@@ -176,7 +180,7 @@ pub struct UTXO {
     /// Indicates if this UTXO has RGB assets bound to it
     pub is_occupied: bool,
     /// RGB assets bound to this UTXO (empty if not occupied)
-    pub bound_assets: Vec<super::rgb::BoundAsset>,
+    pub bound_assets: Vec<BoundAsset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

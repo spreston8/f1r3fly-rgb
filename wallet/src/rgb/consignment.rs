@@ -1,3 +1,6 @@
+use crate::api::types::{AcceptConsignmentResponse, ExportGenesisResponse};
+use crate::error::WalletError;
+use crate::rgb::RgbRuntimeManager;
 /// RGB consignment operations
 ///
 /// Handles RGB consignment acceptance and genesis export.
@@ -5,12 +8,9 @@
 /// Key operations:
 /// - accept_consignment: Import genesis or transfer consignments
 /// - export_genesis_consignment: Export contract state for cross-device sync
-use super::shared::*;
-use crate::api::types::{AcceptConsignmentResponse, ExportGenesisResponse};
-use crate::error::WalletError;
+use crate::storage::Storage;
 use std::str::FromStr;
 
-// Import RGB types from the actual RGB crate (not from shared::rgb module)
 use ::rgb::{ContractId, WitnessStatus};
 
 /// Accept a consignment (genesis or transfer) by importing it into RGB runtime.
@@ -49,10 +49,8 @@ pub fn accept_consignment(
     file.write_all(&consignment_bytes)
         .map_err(|e| WalletError::Internal(format!("Failed to write consignment: {}", e)))?;
     drop(file);
-    log::debug!("Temp consignment file created: {:?}", temp_path);
 
     // 2. Create ephemeral runtime for consignment import
-    log::debug!("Creating ephemeral RGB runtime for consignment import");
     let mut runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
 
     let (contract_id_str, import_type, bitcoin_txid, status) = {
@@ -62,10 +60,6 @@ pub fn accept_consignment(
             .contract_ids()
             .map(|id| id.to_string())
             .collect();
-    log::debug!(
-        "Found {} existing contract(s) before import",
-        contract_ids_before.len()
-    );
 
     // 4. Consume consignment (validates and imports)
     log::info!("Importing consignment file");
@@ -93,7 +87,6 @@ pub fn accept_consignment(
         .difference(&contract_ids_before)
         .cloned()
         .collect();
-    log::debug!("Found {} new contract(s) after import", new_contracts.len());
 
     // Determine which contract was imported
     let contract_id_str = if !new_contracts.is_empty() {
@@ -117,10 +110,7 @@ pub fn accept_consignment(
         .map_err(|e| WalletError::Rgb(format!("Invalid contract ID: {:?}", e)))?;
 
     // 6. Query imported contract to determine type and extract witness info
-
-    log::debug!("Querying contract witness count");
     let witness_count = runtime.contracts.contract_witness_count(contract_id);
-    log::debug!("Contract has {} witness(es)", witness_count);
 
     let (import_type, bitcoin_txid, status) = if witness_count == 0 {
         // Genesis: no witnesses (no Bitcoin TX)
@@ -154,10 +144,6 @@ pub fn accept_consignment(
 
     // 7. Cleanup temp file
     let _ = std::fs::remove_file(&temp_path);
-
-    // ℹ️  NOTE: We do NOT call update() after accept (RGB CLI doesn't either)
-    // The consignment has been imported and saved to disk via FileHolder::drop()
-    // The next operation that needs fresh state (like balance query) will call update()
     
     Ok(AcceptConsignmentResponse {
         contract_id: contract_id_str,
@@ -198,8 +184,6 @@ pub fn export_genesis_consignment(
     let contract_id = ContractId::from_str(contract_id_str)
         .map_err(|e| WalletError::Rgb(format!("Invalid contract ID: {:?}", e)))?;
 
-    log::debug!("Parsed contract ID: {}", contract_id);
-
     // 2. Create consignment directory first
     let consignment_filename = format!("genesis_{}.rgbc", contract_id);
     let exports_dir = storage.base_dir().join("exports");
@@ -208,18 +192,15 @@ pub fn export_genesis_consignment(
         .map_err(|e| WalletError::Internal(format!("Failed to create exports directory: {}", e)))?;
 
     let consignment_path = exports_dir.join(&consignment_filename);
-    log::debug!("Export path: {:?}", consignment_path);
 
     // Remove existing file if present (allow re-export)
     if consignment_path.exists() {
         std::fs::remove_file(&consignment_path).map_err(|e| {
             WalletError::Internal(format!("Failed to remove existing export file: {}", e))
         })?;
-        log::debug!("Removed existing export file");
     }
 
     // 3. Create ephemeral runtime and export
-    log::debug!("Creating ephemeral RGB runtime for genesis export");
     let runtime = rgb_runtime_manager.init_runtime_no_sync(wallet_name)?;
 
     {
@@ -231,11 +212,9 @@ pub fn export_genesis_consignment(
                 contract_id
             )));
         }
-        log::debug!("Contract exists in runtime");
 
         // Get contract state to verify we have allocations
         let state = runtime.contracts.contract_state(contract_id);
-        log::debug!("Retrieved contract state");
 
         // Check if we have any owned states (just for validation)
         let has_allocations = state.owned.values().any(|states| !states.is_empty());
@@ -246,7 +225,6 @@ pub fn export_genesis_consignment(
                 "No allocations found for contract".to_string(),
             ));
         }
-        log::debug!("Contract has allocations");
 
         // Export complete contract state (no terminals needed)
         // Uses export() instead of consign() - exports all state without requiring destinations

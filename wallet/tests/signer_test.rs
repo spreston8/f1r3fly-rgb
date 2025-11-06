@@ -5,7 +5,7 @@ use bpstd::{KeyOrigin, LegacyPk, Sighash};
 use std::str::FromStr;
 
 // Import the signer from wallet crate
-use wallet::wallet::shared::signer::WalletSigner;
+use wallet::bitcoin::signer::WalletSigner;
 
 #[test]
 fn test_signer_derivation() {

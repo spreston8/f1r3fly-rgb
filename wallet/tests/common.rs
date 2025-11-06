@@ -8,9 +8,9 @@
 
 use std::time::Instant;
 use tempfile::TempDir;
-use wallet::wallet::manager::WalletManager;
-use wallet::wallet::shared::storage::Storage;
-use wallet::wallet::shared::balance::BalanceInfo;
+use wallet::manager::WalletManager;
+use wallet::storage::Storage;
+use wallet::bitcoin::balance_checker::BalanceInfo;
 
 /// Test environment with automatic cleanup
 pub struct TestEnvironment {

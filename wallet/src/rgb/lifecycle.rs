@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 
-use super::rgb_runtime_cache::RgbRuntimeCache;
+use super::cache::RgbRuntimeCache;
 use crate::error::WalletError;
 
 /// Manages RGB runtime lifecycle (auto-save, idle cleanup, shutdown)
@@ -42,6 +42,7 @@ impl Default for LifecycleConfig {
 }
 
 impl RuntimeLifecycleManager {
+    /// Create a new runtime lifecycle manager with the specified cache and configuration
     pub fn new(cache: Arc<RgbRuntimeCache>, config: LifecycleConfig) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         log::info!(
@@ -93,17 +94,14 @@ impl RuntimeLifecycleManager {
         log::info!("RGB runtime lifecycle manager background tasks stopped");
     }
 
-    /// Auto-save loop: Periodically save dirty runtimes
+    /// Periodically save dirty runtimes at the configured auto-save interval
     async fn auto_save_loop(&self) {
         let mut interval = tokio::time::interval(self.config.auto_save_interval);
         let mut shutdown_rx = self.shutdown_rx.clone();
 
-        log::debug!("Auto-save loop started (interval: {}s)", self.config.auto_save_interval.as_secs());
-
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    log::debug!("Auto-save tick");
                     if let Err(e) = self.cache.save_all() {
                         log::error!("Auto-save failed: {}", e);
                     }
@@ -116,19 +114,16 @@ impl RuntimeLifecycleManager {
         }
     }
 
-    /// Idle cleanup loop: Evict runtimes that haven't been used recently
+    /// Periodically evict runtimes that haven't been used recently to prevent memory leaks
     async fn idle_cleanup_loop(&self) {
         // Check every 1/4 of the idle timeout
         let check_interval = self.config.idle_timeout / 4;
         let mut interval = tokio::time::interval(check_interval);
         let mut shutdown_rx = self.shutdown_rx.clone();
 
-        log::debug!("Idle cleanup loop started (check interval: {}s)", check_interval.as_secs());
-
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    log::debug!("Idle cleanup tick");
                     self.cleanup_idle_runtimes();
                 }
                 _ = shutdown_rx.changed() => {
@@ -145,11 +140,6 @@ impl RuntimeLifecycleManager {
     /// This runs periodically as part of the idle cleanup background task.
     fn cleanup_idle_runtimes(&self) {
         let stats = self.cache.stats();
-        log::debug!(
-            "Idle cleanup check: {} cached runtime(s), {} dirty",
-            stats.total_cached,
-            stats.dirty_count
-        );
 
         // Perform idle cleanup and LRU eviction
         match self.cache.cleanup_idle(
@@ -171,7 +161,7 @@ impl RuntimeLifecycleManager {
         }
     }
 
-    /// Shutdown the lifecycle manager and save all state
+    /// Gracefully shutdown the lifecycle manager, stopping background tasks and saving all runtime state
     pub async fn shutdown(&self) -> Result<(), WalletError> {
         log::info!("Shutting down RGB runtime lifecycle manager...");
 
@@ -189,7 +179,7 @@ impl RuntimeLifecycleManager {
         Ok(())
     }
 
-    /// Get current configuration
+    /// Get the current lifecycle configuration
     pub fn config(&self) -> &LifecycleConfig {
         &self.config
     }

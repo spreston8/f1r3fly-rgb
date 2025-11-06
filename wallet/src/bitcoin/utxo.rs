@@ -1,28 +1,21 @@
-/// Bitcoin transaction operations
-/// 
-/// Handles Bitcoin sending, UTXO creation/unlocking, and transaction signing.
+//! UTXO management operations (create and unlock)
 
-use super::shared::*;
-use crate::api::types::{
-    CreateUtxoRequest, CreateUtxoResponse,
-    SendBitcoinRequest, SendBitcoinResponse,
-    UnlockUtxoRequest, UnlockUtxoResponse,
-};
-use crate::config::WalletConfig;
+use crate::api::types::{CreateUtxoRequest, CreateUtxoResponse, UnlockUtxoRequest, UnlockUtxoResponse};
 use crate::error::WalletError;
+use crate::storage::Storage;
 use bitcoin::Network;
-use std::str::FromStr;
 
-/// Get Bitcoin network from config
-fn get_network() -> Network {
-    WalletConfig::from_env().bitcoin_network
-}
+use crate::wallet::AddressManager;
+use crate::bitcoin::{BalanceChecker, balance_checker};
+use crate::bitcoin::network::get_network;
+use crate::rgb::RgbRuntimeManager;
+use super::transaction::{TransactionBuilder, broadcast_transaction};
 
 /// Create a UTXO for RGB operations
 pub async fn create_utxo(
     storage: &Storage,
     balance_checker: &BalanceChecker,
-    rgb_runtime_manager: &super::shared::RgbRuntimeManager,
+    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
     request: CreateUtxoRequest,
 ) -> Result<CreateUtxoResponse, WalletError> {
@@ -62,7 +55,7 @@ pub async fn create_utxo(
     let recipient_address =
         AddressManager::derive_address(&descriptor, target_index, network)?;
 
-    let tx_builder = transaction::TransactionBuilder::new(network);
+    let tx_builder = TransactionBuilder::new(network);
 
     let tx = tx_builder.build_send_to_self(
         &balance.utxos,
@@ -76,7 +69,7 @@ pub async fn create_utxo(
     // Sign transaction with correct keys for each UTXO's address index
     let signed_tx = sign_transaction_multi_key(&tx, &balance.utxos, &mnemonic)?;
 
-    let txid = transaction::broadcast_transaction(&signed_tx, network).await?;
+    let txid = broadcast_transaction(&signed_tx, network).await?;
     
     log::debug!("UTXO transaction broadcast successfully: {}", txid);
 
@@ -119,7 +112,7 @@ pub async fn create_utxo(
 pub async fn unlock_utxo(
     storage: &Storage,
     balance_checker: &BalanceChecker,
-    rgb_runtime_manager: &super::shared::RgbRuntimeManager,
+    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
     request: UnlockUtxoRequest,
 ) -> Result<UnlockUtxoResponse, WalletError> {
@@ -158,7 +151,7 @@ pub async fn unlock_utxo(
     let destination_address =
         AddressManager::derive_address(&descriptor, destination_index, network)?;
 
-    let tx_builder = transaction::TransactionBuilder::new(network);
+    let tx_builder = TransactionBuilder::new(network);
 
     let tx =
         tx_builder.build_unlock_utxo_tx(&target_utxo, destination_address.clone(), fee_rate)?;
@@ -169,7 +162,7 @@ pub async fn unlock_utxo(
     let signed_tx =
         sign_transaction_multi_key(&tx, &vec![target_utxo.clone()], &mnemonic)?;
 
-    let txid = transaction::broadcast_transaction(&signed_tx, network).await?;
+    let txid = broadcast_transaction(&signed_tx, network).await?;
 
     let fee_sats = target_utxo.amount_sats - signed_tx.output[0].value.to_sat();
     let recovered_sats = signed_tx.output[0].value.to_sat();
@@ -183,136 +176,18 @@ pub async fn unlock_utxo(
     })
 }
 
-/// Send Bitcoin to an address
-pub async fn send_bitcoin(
-    storage: &Storage,
-    balance_checker: &BalanceChecker,
-    rgb_runtime_manager: &super::shared::RgbRuntimeManager,
-    wallet_name: &str,
-    request: SendBitcoinRequest,
-) -> Result<SendBitcoinResponse, WalletError> {
-    log::info!("Sending Bitcoin from wallet: {} to address: {}, amount: {} sats", 
-        wallet_name, request.to_address, request.amount_sats);
-
-    if !storage.wallet_exists(wallet_name) {
-        return Err(WalletError::WalletNotFound(wallet_name.to_string()));
-    }
-
-    // Parse destination address
-    let network = get_network();
-    let to_address = bitcoin::Address::from_str(&request.to_address)
-        .map_err(|e| {
-            WalletError::InvalidInput(format!("Invalid address: {}", e))
-        })?
-        .require_network(network)
-        .map_err(|e| {
-            WalletError::InvalidInput(format!("Address network mismatch: {}", e))
-        })?;
-
-    let fee_rate = request.fee_rate_sat_vb.unwrap_or(2);
-    let balance = get_balance_for_tx(storage, balance_checker, rgb_runtime_manager, wallet_name).await?;
-
-    if balance.utxos.is_empty() {
-        return Err(WalletError::InsufficientFunds(
-            "No UTXOs available to send Bitcoin".to_string(),
-        ));
-    }
-
-    // Calculate total available (excluding RGB-occupied UTXOs)
-    let available_sats: u64 = balance
-        .utxos
-        .iter()
-        .filter(|u| !u.is_occupied && u.confirmations > 0)
-        .map(|u| u.amount_sats)
-        .sum();
-
-    let estimated_fee = fee_rate * 150; // Rough estimate for 1 input, 2 outputs
-    let total_needed = request.amount_sats + estimated_fee;
-
-    if available_sats < total_needed {
-        return Err(WalletError::InsufficientFunds(format!(
-            "Insufficient funds. Available: {} sats, needed: {} sats (including ~{} sats fee)",
-            available_sats, total_needed, estimated_fee
-        )));
-    }
-
-    // Select UTXOs (simple first-fit)
-    let mut selected_utxos = Vec::new();
-    let mut selected_total = 0u64;
-    for utxo in balance.utxos.iter() {
-        if !utxo.is_occupied && utxo.confirmations > 0 {
-            selected_utxos.push(utxo.clone());
-            selected_total += utxo.amount_sats;
-            if selected_total >= total_needed {
-                break;
-            }
-        }
-    }
-
-    if selected_total < total_needed {
-        return Err(WalletError::InsufficientFunds(
-            "Could not select enough confirmed UTXOs".to_string(),
-        ));
-    }
-
-    // Create change address using internal_next_index
-    let descriptor = storage.load_descriptor(wallet_name)?;
-    let mut state = storage.load_state(wallet_name)?;
-    let change_index = state.internal_next_index;
-    
-    log::debug!("Using internal address index {} for Bitcoin change", change_index);
-    
-    state.used_addresses.push(change_index);
-    state.internal_next_index += 1;
-    
-    let change_address =
-        AddressManager::derive_address(&descriptor, change_index, network)?;
-
-    // Build transaction
-    let tx_builder = transaction::TransactionBuilder::new(network);
-    let tx = tx_builder.build_send_tx(
-        &selected_utxos,
-        to_address.clone(),
-        request.amount_sats,
-        change_address,
-        fee_rate,
-    )?;
-
-    // Sign transaction
-    let mnemonic = storage.load_mnemonic(wallet_name)?;
-    let signed_tx = sign_transaction_multi_key(&tx, &selected_utxos, &mnemonic)?;
-
-    // Calculate actual fee
-    let total_input: u64 = selected_utxos.iter().map(|u| u.amount_sats).sum();
-    let total_output: u64 = signed_tx.output.iter().map(|o| o.value.to_sat()).sum();
-    let fee_sats = total_input - total_output;
-
-    // Broadcast
-    let txid = transaction::broadcast_transaction(&signed_tx, network).await?;
-    log::info!("Bitcoin sent - txid: {}", txid);
-
-    storage.save_state(wallet_name, &state)?;
-
-    Ok(SendBitcoinResponse {
-        txid,
-        amount_sats: request.amount_sats,
-        fee_sats,
-        to_address: request.to_address,
-    })
-}
-
 // ============================================================================
-// Helper Functions
+// Helper Functions (shared between UTXO and send operations)
 // ============================================================================
 
 /// Helper to get balance for transaction building
 /// CRITICAL: Includes RGB state to prevent spending RGB-occupied UTXOs
-async fn get_balance_for_tx(
+pub async fn get_balance_for_tx(
     storage: &Storage,
     balance_checker: &BalanceChecker,
-    rgb_runtime_manager: &super::shared::RgbRuntimeManager,
+    rgb_runtime_manager: &RgbRuntimeManager,
     wallet_name: &str,
-) -> Result<balance::BalanceInfo, WalletError> {
+) -> Result<balance_checker::BalanceInfo, WalletError> {
     let descriptor = storage.load_descriptor(wallet_name)?;
     const GAP_LIMIT: u32 = 20;
     let network = get_network();
@@ -323,14 +198,11 @@ async fn get_balance_for_tx(
     let mut balance = balance_checker.calculate_balance(&addresses_with_indices).await?;
     
     // Phase 2: Get RGB balance to mark occupied UTXOs
-    // This is CRITICAL - without this, genesis UTXOs can be spent by non-RGB transactions!
-    let storage_clone = storage.clone();
     let rgb_mgr_clone = rgb_runtime_manager.clone();
     let wallet_name_clone = wallet_name.to_string();
-    let utxos_clone = balance.utxos.clone();
     
     let rgb_data = tokio::task::spawn_blocking(move || {
-        super::balance_ops::get_rgb_balance_sync(&storage_clone, &rgb_mgr_clone, &wallet_name_clone, &utxos_clone)
+        crate::bitcoin::balance::get_rgb_balance_sync(&rgb_mgr_clone, &wallet_name_clone)
     })
     .await
     .map_err(|e| WalletError::Internal(format!("Get RGB balance task panicked: {}", e)))?;
@@ -352,11 +224,13 @@ async fn get_balance_for_tx(
     Ok(balance)
 }
 
-/// Derive private key for a specific address index
-fn derive_private_key_for_index(
+/// Derive the private key for a specific BIP84 address index using the wallet's mnemonic
+pub fn derive_private_key_for_index(
     mnemonic: &bip39::Mnemonic,
     address_index: u32,
 ) -> Result<bitcoin::PrivateKey, WalletError> {
+    use std::str::FromStr;
+    
     let network = get_network();
     let seed = mnemonic.to_seed("");
     let master_key = bitcoin::bip32::Xpriv::new_master(network, &seed)
@@ -382,10 +256,10 @@ fn derive_private_key_for_index(
     ))
 }
 
-/// Sign a transaction using the correct private keys for each UTXO
-fn sign_transaction_multi_key(
+/// Sign a transaction with multiple private keys, deriving the correct key for each input based on its UTXO's address index
+pub fn sign_transaction_multi_key(
     tx: &bitcoin::Transaction,
-    utxos: &[balance::UTXO],
+    utxos: &[balance_checker::UTXO],
     mnemonic: &bip39::Mnemonic,
 ) -> Result<bitcoin::Transaction, WalletError> {
     use bitcoin::hashes::Hash;
@@ -446,3 +320,4 @@ fn sign_transaction_multi_key(
 
     Ok(signed_tx)
 }
+

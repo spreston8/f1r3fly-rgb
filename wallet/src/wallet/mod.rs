@@ -1,32 +1,17 @@
-/// Wallet Core Module
-/// 
-/// Modular wallet implementation with clear separation of concerns:
-/// 
-/// - `manager.rs` - Orchestrator for all wallet operations
-/// - `wallet_ops.rs` - Wallet lifecycle operations
-/// - `address_ops.rs` - Address management
-/// - `balance_ops.rs` - Balance queries
-/// - `sync_ops.rs` - Synchronization logic
-/// - `bitcoin_ops.rs` - Bitcoin transactions
-/// - `rgb_transfer_ops.rs` - RGB invoice & transfer
-/// - `rgb_consignment_ops.rs` - RGB consignment handling
-/// - `shared/` - Reusable components (addresses, balance, keys, etc.)
+//! Core wallet operations
+//! 
+//! - Wallet lifecycle (create, import, delete)
+//! - Address management
+//! - Blockchain synchronization
 
-// Operation modules
-pub mod address_ops;
-pub mod balance_ops;
-pub mod bitcoin_ops;
-pub mod rgb_consignment_ops;
-pub mod rgb_transfer_ops;
-pub mod sync_ops;
-pub mod wallet_ops;
+pub mod lifecycle;
+pub mod addresses;
+pub mod sync;
+pub mod address_manager;
 
-// Shared components (copied from old wallet/)
-pub mod shared;
-
-// Main manager (orchestrator)
-pub mod manager;
-
-// Re-export the manager as the main entry point
-pub use manager::WalletManager;
+// Public API exports
+pub use lifecycle::{create_wallet, import_wallet, list_wallets, delete_wallet};
+pub use addresses::{get_addresses, get_primary_address};
+pub use sync::{sync_wallet, sync_rgb_runtime, sync_rgb_internal, sync_rgb_after_state_change};
+pub use address_manager::AddressManager;
 

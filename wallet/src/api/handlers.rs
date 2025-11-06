@@ -6,13 +6,9 @@ use std::sync::Arc;
 
 use crate::{
     api::types::*,
-    wallet::{
-        shared::{
-            balance::BalanceInfo,
-            rgb::{IssueAssetRequest, IssueAssetResponse},
-        },
-        WalletManager,
-    },
+    manager::WalletManager,
+    bitcoin::balance_checker::BalanceInfo,
+    rgb::asset::{IssueAssetRequest, IssueAssetResponse},
 };
 
 pub async fn create_wallet_handler(

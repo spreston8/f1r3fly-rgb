@@ -8,17 +8,19 @@ use bitcoin::transaction::{OutPoint, Sequence};
 use bitcoin::{absolute, Address, Network};
 use bitcoin::{PrivateKey, PublicKey};
 
-use super::balance::UTXO;
+use crate::bitcoin::balance_checker::UTXO;
 
 pub struct TransactionBuilder {
     network: Network,
 }
 
 impl TransactionBuilder {
+    /// Create a new transaction builder for the specified network
     pub fn new(network: Network) -> Self {
         Self { network }
     }
 
+    /// Build a transaction that sends funds to a recipient address with change back to the same address
     pub fn build_send_to_self(
         &self,
         available_utxos: &[UTXO],
@@ -80,6 +82,7 @@ impl TransactionBuilder {
         Ok(tx)
     }
 
+    /// Build a transaction that sends funds to a recipient with change to a specified address
     pub fn build_send_tx(
         &self,
         utxos: &[UTXO],
@@ -89,7 +92,7 @@ impl TransactionBuilder {
         fee_rate_sat_vb: u64,
     ) -> Result<Transaction, crate::error::WalletError> {
         let total_input: u64 = utxos.iter().map(|u| u.amount_sats).sum();
-        let estimated_size = self.estimate_tx_size(utxos.len(), 2); // 2 outputs (to + change)
+        let estimated_size = self.estimate_tx_size(utxos.len(), 2);
         let fee = estimated_size * fee_rate_sat_vb;
 
         if total_input < amount_sats + fee {
@@ -109,7 +112,6 @@ impl TransactionBuilder {
             output: vec![],
         };
 
-        // Add inputs
         for utxo in utxos {
             tx.input.push(TxIn {
                 previous_output: OutPoint {
@@ -124,7 +126,6 @@ impl TransactionBuilder {
             });
         }
 
-        // Add payment output
         tx.output.push(TxOut {
             value: bitcoin::Amount::from_sat(amount_sats),
             script_pubkey: to_address.script_pubkey(),
@@ -141,6 +142,7 @@ impl TransactionBuilder {
         Ok(tx)
     }
 
+    /// Build a transaction that unlocks a single UTXO and sends all funds (minus fee) to a destination
     pub fn build_unlock_utxo_tx(
         &self,
         utxo: &UTXO,
@@ -193,6 +195,7 @@ impl TransactionBuilder {
         Ok(tx)
     }
 
+    /// Sign a transaction using a single private key for all inputs
     pub fn sign_transaction(
         &self,
         mut tx: Transaction,
@@ -248,6 +251,7 @@ impl TransactionBuilder {
         Ok(tx)
     }
 
+    /// Select UTXOs to cover the target amount plus fees using a largest-first strategy
     fn select_utxos(
         &self,
         available_utxos: &[UTXO],
@@ -278,6 +282,7 @@ impl TransactionBuilder {
         )))
     }
 
+    /// Estimate transaction size in virtual bytes based on number of inputs and outputs
     fn estimate_tx_size(&self, num_inputs: usize, num_outputs: usize) -> u64 {
         let base_size = 10;
         let input_size = 68;
@@ -287,6 +292,7 @@ impl TransactionBuilder {
     }
 }
 
+/// Broadcast a signed transaction to the network and return the transaction ID
 pub async fn broadcast_transaction(
     tx: &Transaction,
     network: Network,
@@ -333,3 +339,4 @@ pub async fn broadcast_transaction(
 
     Ok(txid)
 }
+
