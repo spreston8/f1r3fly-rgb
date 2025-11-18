@@ -124,6 +124,11 @@ jobs:
           echo "Running consignment_test..."
           cargo test --test consignment_test
 
+      - name: Run invoice_test
+        run: |
+          echo "Running invoice_test..."
+          cargo test --test invoice_test
+
       - name: Collect node logs on failure
         if: failure()
         run: |

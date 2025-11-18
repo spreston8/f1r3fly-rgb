@@ -12,10 +12,12 @@ node_cli = { git = "https://github.com/F1R3FLY-io/rust-client", branch = "rgb" }
 
 # RGB ecosystem
 rgb-std = { version = "0.12.0-rc.3", features = ["serde"] }
+rgb-invoice = { version = "0.12.0-rc.3", features = ["bitcoin", "uri"] }
 hypersonic = "0.12.0"
 bp-core = "0.12.0"
 bp-std = { version = "0.12.0-rc.3", features = ["client-side-validation", "serde"] }
 commit_verify = "0.12.0"
+bitcoin = { version = "0.32", features = ["serde"] }
 
 # Strict types (match RGB workspace versions)
 strict_types = "2.9.0"

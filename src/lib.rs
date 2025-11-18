@@ -42,6 +42,7 @@ pub mod contract_library;
 pub mod contracts;
 pub mod error;
 pub mod executor;
+pub mod invoice;
 pub mod tapret;
 
 // Re-exports for convenience
@@ -57,12 +58,20 @@ pub use tapret::{
     extract_tapret_commitment, verify_tapret_commitment, verify_tapret_proof_in_tx, TapretError,
 };
 
+// Re-export invoice module API
+pub use invoice::{
+    extract_seal, generate_invoice, get_recipient_address, parse_invoice, GeneratedInvoice,
+    InvoiceRequest, ParsedInvoice,
+};
+
 // Re-export commonly used RGB types
 pub use bp::seals::{TxoSeal, WTxoSeal};
 pub use bp::{Sats, Tx, Txid};
 pub use bpstd::psbt::TxParams; // For custom PSBT construction
 pub use hypersonic::{CellAddr, ContractId, Opid};
 pub use rgb::{Pile, RgbSeal, WitnessStatus};
+pub use rgb_invoice::bp::WitnessOut;
+pub use rgb_invoice::{RgbBeneficiary, RgbInvoice};
 pub use strict_types::StrictVal;
 
 // Common result type
