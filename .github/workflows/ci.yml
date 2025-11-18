@@ -102,27 +102,27 @@ jobs:
       - name: Run contract_test (sequential)
         run: |
           echo "Running contract_test with --test-threads=1..."
-          cargo test --test contract_test -- --test-threads=1 --nocapture
+          cargo test --test contract_test -- --test-threads=1
 
       - name: Run f1r3fly_executor_test (sequential)
         run: |
           echo "Running f1r3fly_executor_test with --test-threads=1..."
-          cargo test --test f1r3fly_executor_test -- --test-threads=1 --nocapture
+          cargo test --test f1r3fly_executor_test -- --test-threads=1
 
       - name: Run contracts_test
         run: |
           echo "Running contracts_test..."
-          cargo test --test contracts_test --nocapture
+          cargo test --test contracts_test
 
       - name: Run bitcoin_anchor_test
         run: |
           echo "Running bitcoin_anchor_test..."
-          cargo test --test bitcoin_anchor_test --nocapture
+          cargo test --test bitcoin_anchor_test
 
       - name: Run consignment_test
         run: |
           echo "Running consignment_test..."
-          cargo test --test consignment_test --nocapture
+          cargo test --test consignment_test
 
       - name: Collect node logs on failure
         if: failure()
