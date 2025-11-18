@@ -46,7 +46,7 @@ jobs:
       - name: Start F1r3fly Node
         run: |
           cd ci
-          docker-compose -f standalone.yml --env-file .env.compose up -d
+          docker compose -f standalone.yml --env-file .env.compose up -d
           echo "F1r3fly node container started"
 
       - name: Wait for F1r3fly Node to be ready
@@ -68,7 +68,7 @@ jobs:
             if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
               echo "❌ Node failed to become ready after $MAX_ATTEMPTS attempts"
               echo "Container logs:"
-              cd ci && docker-compose -f standalone.yml logs
+              cd ci && docker compose -f standalone.yml logs
               exit 1
             fi
             
@@ -82,7 +82,7 @@ jobs:
           curl -s http://localhost:40403/status | jq '.' || curl -s http://localhost:40403/status
           echo ""
           echo "Container status:"
-          cd ci && docker-compose -f standalone.yml ps
+          cd ci && docker compose -f standalone.yml ps
 
       - name: Create .env file for Rust tests
         run: |
@@ -128,7 +128,7 @@ jobs:
         if: failure()
         run: |
           echo "Collecting F1r3fly node logs..."
-          cd ci && docker-compose -f standalone.yml logs > ../f1r3fly-node.log
+          cd ci && docker compose -f standalone.yml logs > ../f1r3fly-node.log
           echo "Logs saved to f1r3fly-node.log"
 
       - name: Upload artifacts on failure
@@ -145,7 +145,7 @@ jobs:
         if: always()
         run: |
           echo "Stopping F1r3fly node..."
-          cd ci && docker-compose -f standalone.yml down -v
+          cd ci && docker compose -f standalone.yml down -v
           echo "F1r3fly node stopped and cleaned up"
 
       - name: Test Summary
