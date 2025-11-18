@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl
+          sudo apt-get install -y curl protobuf-compiler
 
       - name: Create Docker Compose environment file
         run: |
@@ -97,7 +97,7 @@ jobs:
       - name: Run unit tests
         run: |
           echo "Running unit tests..."
-          cargo test --lib --verbose
+          cargo test --lib
 
       - name: Run contract_test (sequential)
         run: |
