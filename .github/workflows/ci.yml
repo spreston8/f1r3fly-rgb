@@ -1,0 +1,158 @@
+name: CI Tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Create Docker Compose environment file
+        run: |
+          cat > ci/.env.compose << EOF
+          STANDALONE_HOST=standalone-node
+          STANDALONE_PRIVATE_KEY=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657
+          OPENAI_ENABLED=false
+          EOF
+          echo "Created .env.compose file for Docker Compose"
+
+      - name: Start F1r3fly Node
+        run: |
+          cd ci
+          docker-compose -f standalone.yml --env-file .env.compose up -d
+          echo "F1r3fly node container started"
+
+      - name: Wait for F1r3fly Node to be ready
+        run: |
+          echo "Waiting for F1r3fly node to become ready..."
+          MAX_ATTEMPTS=60
+          ATTEMPT=0
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: Checking node status..."
+            
+            if curl -sf http://localhost:40403/status | grep -q "version"; then
+              echo "✅ F1r3fly node is ready!"
+              curl -s http://localhost:40403/status | jq '.' || curl -s http://localhost:40403/status
+              break
+            fi
+            
+            if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+              echo "❌ Node failed to become ready after $MAX_ATTEMPTS attempts"
+              echo "Container logs:"
+              cd ci && docker-compose -f standalone.yml logs
+              exit 1
+            fi
+            
+            echo "Node not ready yet, waiting 5 seconds..."
+            sleep 5
+          done
+
+      - name: Display node information
+        run: |
+          echo "Node status:"
+          curl -s http://localhost:40403/status | jq '.' || curl -s http://localhost:40403/status
+          echo ""
+          echo "Container status:"
+          cd ci && docker-compose -f standalone.yml ps
+
+      - name: Create .env file for Rust tests
+        run: |
+          cat > .env << EOF
+          FIREFLY_HOST=localhost
+          FIREFLY_GRPC_PORT=40401
+          FIREFLY_HTTP_PORT=40403
+          FIREFLY_PRIVATE_KEY=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657
+          EOF
+          echo "Created .env file for Rust tests"
+
+      - name: Run unit tests
+        run: |
+          echo "Running unit tests..."
+          cargo test --lib --verbose
+
+      - name: Run contract_test (sequential)
+        run: |
+          echo "Running contract_test with --test-threads=1..."
+          cargo test --test contract_test -- --test-threads=1 --nocapture
+
+      - name: Run f1r3fly_executor_test (sequential)
+        run: |
+          echo "Running f1r3fly_executor_test with --test-threads=1..."
+          cargo test --test f1r3fly_executor_test -- --test-threads=1 --nocapture
+
+      - name: Run contracts_test
+        run: |
+          echo "Running contracts_test..."
+          cargo test --test contracts_test --nocapture
+
+      - name: Run bitcoin_anchor_test
+        run: |
+          echo "Running bitcoin_anchor_test..."
+          cargo test --test bitcoin_anchor_test --nocapture
+
+      - name: Run consignment_test
+        run: |
+          echo "Running consignment_test..."
+          cargo test --test consignment_test --nocapture
+
+      - name: Collect node logs on failure
+        if: failure()
+        run: |
+          echo "Collecting F1r3fly node logs..."
+          cd ci && docker-compose -f standalone.yml logs > ../f1r3fly-node.log
+          echo "Logs saved to f1r3fly-node.log"
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-failure-logs
+          path: |
+            f1r3fly-node.log
+            ci/data/
+          retention-days: 7
+
+      - name: Stop F1r3fly Node
+        if: always()
+        run: |
+          echo "Stopping F1r3fly node..."
+          cd ci && docker-compose -f standalone.yml down -v
+          echo "F1r3fly node stopped and cleaned up"
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "==================================="
+          echo "Test Execution Complete"
+          echo "==================================="
+          echo "Check the steps above for test results"
+

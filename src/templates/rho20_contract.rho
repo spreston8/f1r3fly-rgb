@@ -1,0 +1,206 @@
+// Complete Rho20 Token Contract with State - CORRECTED VERSION
+// Based on embers insert_signed.rho pattern with proper insertSigned format
+//
+// This is a fully working token contract that demonstrates:
+// - Correct insertSigned registration for persistent contract deployment
+// - State management with treeHashMap (all state in map, no separate channels)
+// - Issue, transfer, and balance query operations
+// - Proper URI binding so lookups work
+//
+// Template variables (replaced by executor.rs):
+// - {{TICKER}}, {{NAME}}, {{TOTAL_SUPPLY}}, {{PRECISION}}
+// - {{PUBLIC_KEY}}, {{SIGNATURE}}, {{VERSION}}, {{URI}}
+
+new rl(`rho:registry:lookup`),
+    rs(`rho:registry:insertSigned:secp256k1`),
+    stdout(`rho:io:stdout`),
+    abort(`rho:execution:abort`),
+    devNull(`rho:io:devNull`),
+    treeHashMapCh,
+    balanceMapCh,
+    prevEnvCh,
+    initEnv,
+    Rho20Token,
+    uriOut
+in {
+  // Check if contract already exists (Embers upgrade pattern)
+  rl!(`{{URI}}`, *prevEnvCh) |
+  
+  for(@Nil <- prevEnvCh) {
+    initEnv!()
+  } |
+  
+  for(@(version, _) <- prevEnvCh) {
+    if (version < {{VERSION}}) {
+      initEnv!()
+    }
+  } |
+  
+  for(<- initEnv) {
+    // Initialize treeHashMap for ALL state (balances + unallocated)
+    rl!(`rho:lang:treeHashMap`, *treeHashMapCh) |
+    
+    for(treeHashMap <- treeHashMapCh) {
+      treeHashMap!("init", 3, *treeHashMapCh) |
+      
+      for(@balanceMap <- treeHashMapCh) {
+        // CRITICAL: Initialize unallocated supply IN the map
+        // This prevents race conditions and ensures persistence
+        treeHashMap!("set", balanceMap, "unallocated", {{TOTAL_SUPPLY}}, *devNull) |
+        
+        // Store treeHashMap and map for persistent access (uses <<- peek)
+        balanceMapCh!(*treeHashMap, balanceMap) |
+        
+        // =====================================================================
+        // Method: getMetadata - Returns token metadata
+        // =====================================================================
+        contract Rho20Token(@"getMetadata", ret) = {
+          ret!({
+            "ticker": "{{TICKER}}",
+            "name": "{{NAME}}",
+            "supply": {{TOTAL_SUPPLY}},
+            "decimals": {{PRECISION}}
+          })
+        } |
+        
+        // =====================================================================
+        // Method: balanceOf - Query balance for an address
+        // =====================================================================
+        contract Rho20Token(@"balanceOf", @address, ret) = {
+          new foundCh, notFoundCh in {
+            for(treeHashMap, @currentMap <<- balanceMapCh) {
+              treeHashMap!("getOrElse", currentMap, address, *foundCh, *notFoundCh)
+            } |
+            
+            for(@balance <- foundCh) {
+              ret!(balance)
+            } |
+            
+            for(<- notFoundCh) {
+              ret!(0)
+            }
+          }
+        } |
+        
+        // =====================================================================
+        // Method: issue - Allocate tokens from unallocated supply
+        // =====================================================================
+        // FIXED: Store unallocated in treeHashMap, not separate channel
+        contract Rho20Token(@"issue", @recipient, @amount, ret) = {
+          if (amount <= 0) {
+            ret!({"success": false, "error": "Amount must be positive"})
+          } else {
+            new unallocFoundCh, unallocNotFoundCh in {
+              for(treeHashMap, @currentMap <<- balanceMapCh) {
+                // Get current unallocated from map (stored with key "unallocated")
+                treeHashMap!("getOrElse", currentMap, "unallocated", *unallocFoundCh, *unallocNotFoundCh) |
+                
+                for(@currentUnallocated <- unallocFoundCh) {
+                  if (amount <= currentUnallocated) {
+                    // Update unallocated in map
+                    treeHashMap!("set", currentMap, "unallocated", currentUnallocated - amount, *devNull) |
+                    
+                    // Update recipient balance
+                    new balFoundCh, balNotFoundCh in {
+                      treeHashMap!("getOrElse", currentMap, recipient, *balFoundCh, *balNotFoundCh) |
+                      
+                      for(@existingBalance <- balFoundCh) {
+                        // Add to existing balance
+                        treeHashMap!("set", currentMap, recipient, existingBalance + amount, *devNull) |
+                        ret!({"success": true, "balance": existingBalance + amount})
+                      } |
+                      
+                      for(<- balNotFoundCh) {
+                        // Create new balance entry
+                        treeHashMap!("set", currentMap, recipient, amount, *devNull) |
+                        ret!({"success": true, "balance": amount})
+                      }
+                    }
+                  } else {
+                    ret!({"success": false, "error": "Insufficient unallocated supply", "available": currentUnallocated, "requested": amount})
+                  }
+                } |
+                
+                for(<- unallocNotFoundCh) {
+                  ret!({"success": false, "error": "Contract not initialized - unallocated supply not found"})
+                }
+              }
+            }
+          }
+        } |
+        
+        // =====================================================================
+        // Method: transfer - Transfer tokens between addresses
+        // =====================================================================
+        contract Rho20Token(@"transfer", @from, @to, @amount, ret) = {
+          if (amount <= 0) {
+            ret!({"success": false, "error": "Amount must be positive"})
+          } else {
+            new fromFoundCh, fromNotFoundCh in {
+              for(treeHashMap, @currentMap <<- balanceMapCh) {
+                treeHashMap!("getOrElse", currentMap, from, *fromFoundCh, *fromNotFoundCh) |
+                
+                for(@fromBalance <- fromFoundCh) {
+                  if (fromBalance >= amount) {
+                    // Deduct from sender
+                    treeHashMap!("set", currentMap, from, fromBalance - amount, *devNull) |
+                    
+                    // Update recipient
+                    new toFoundCh, toNotFoundCh in {
+                      treeHashMap!("getOrElse", currentMap, to, *toFoundCh, *toNotFoundCh) |
+                      
+                      for(@toBalance <- toFoundCh) {
+                        // Add to existing recipient balance
+                        treeHashMap!("set", currentMap, to, toBalance + amount, *devNull) |
+                        ret!({"success": true, "from_balance": fromBalance - amount, "to_balance": toBalance + amount})
+                      } |
+                      
+                      for(<- toNotFoundCh) {
+                        // Create new recipient balance
+                        treeHashMap!("set", currentMap, to, amount, *devNull) |
+                        ret!({"success": true, "from_balance": fromBalance - amount, "to_balance": amount})
+                      }
+                    }
+                  } else {
+                    ret!({"success": false, "error": "Insufficient balance", "balance": fromBalance, "requested": amount})
+                  }
+                } |
+                
+                for(<- fromNotFoundCh) {
+                  ret!({"success": false, "error": "Sender has no balance"})
+                }
+              }
+            }
+          }
+        } |
+        
+        // =====================================================================
+        // Register with insertSigned - CORRECT FORMAT (from Registry.rho)
+        // =====================================================================
+        // API: insertSigned(@pubKeyBytes, @(version, data), @sig, ret)
+        // - pubKeyBytes: Public key for URI generation
+        // - (version, data): Tuple with version number and contract bundle
+        // - sig: Signature of (timestamp, deployerPubKey, version)
+        // - ret: Return channel (returns URI or Nil)
+        //
+        // insertSigned automatically stores (version, data) at the URI!
+        // No need for manual @uri!(...) binding.
+        
+        rs!(
+          "{{PUBLIC_KEY}}".hexToBytes(),
+          ({{VERSION}}, bundle+{*Rho20Token}),
+          "{{SIGNATURE}}".hexToBytes(),
+          *uriOut
+        ) |
+        
+        for(@Nil <- uriOut) {
+          abort!("insertSigned failed - signature verification error")
+        } |
+        
+        for(@uri <- uriOut) {
+          stdout!(("Rho20 Token Registered", "URI:", uri, "Ticker:", "{{TICKER}}", "Supply:", {{TOTAL_SUPPLY}}))
+        }
+      }
+    }
+  }
+}
