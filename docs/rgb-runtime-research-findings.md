@@ -764,7 +764,93 @@ From RGB20 schema (observed in examples):
 | Option 2 (Hybrid) | 6/10 ⚠️ | **Feasible but complex** |
 | Option 1 (Deep) | 4/10 ⚠️ | **Research project** |
 
-**Overall Confidence: 8.5/10** ✅ (Very high confidence for practical implementation, including F1r3fly integration strategy!)
+**Overall Confidence: 8.5/10** ✅ (Very high confidence for practical implementation!)
+
+**Note**: For F1r3fly/Rholang integration details, see `f1r3fly-integration-plan.md`
+
+---
+
+## RGB Source Code Architecture (Pure RGB Analysis)
+
+### Research Date: November 6, 2025
+
+### Three-Layer Architecture
+
+```
+RGB-Std (Bitcoin Integration)
+    ↓ calls
+Hypersonic/Sonic (Contract Ledger)
+    ↓ calls
+UltraSONIC (AluVM Execution)
+```
+
+### Crate Structure
+
+| Crate | Location | Purpose |
+|-------|----------|---------|
+| **ultrasonic** | `/ultrasonic/` | AluVM execution engine |
+| **hypersonic (sonic)** | `/sonic/` | Contract ledger & state |
+| **sonic-persist-fs** | `/sonic/persistence/fs/` | Filesystem persistence |
+| **rgb-std** | `/rgb-std/` | Bitcoin integration |
+| **rgb-core** | `/rgb-core/` | Core verification traits |
+| **rgb** | `/rgb/` | Runtime & CLI |
+
+### Contract Storage Structure
+
+```
+./wallets/{name}/rgb_data/
+├── {Name}.{codex_id}.issuer     ← Schema file (binary)
+└── {Name}.{contract_id}.contract/
+    ├── codex.yaml           ← Contract schema
+    ├── meta.toml            ← Metadata
+    ├── genesis.dat          ← Genesis operation
+    ├── semantics.dat        ← Type system
+    ├── state.dat            ← Current state (memory cells)
+    ├── stash.aora           ← All operations history
+    ├── trace.aora           ← State transitions
+    ├── spent.aura           ← UTXO spending graph
+    ├── read.aora            ← Read dependencies
+    └── valid.aura           ← Valid operation flags
+```
+
+### Execution Flow
+
+```
+Contract::call() (rgb-std/src/contract.rs:617)
+    ↓
+Ledger::call() (sonic/src/ledger.rs:508)
+    ↓
+Ledger::apply_verify() (sonic/src/ledger.rs:544)
+    ↓
+Codex::verify() (ultrasonic/src/codex.rs:161)
+    ↓
+    ├─> Phase 1: Memory access (load state cells)
+    ├─> Phase 2: AluVM execution (vm_main.exec)
+    └─> Phase 3: Lock verification (input conditions)
+    ↓
+Result: VerifiedOperation
+    ↓
+Ledger::apply() → Updates state
+```
+
+### Key Hook Point for Modification
+
+**File**: `/sonic/src/ledger.rs`, Line ~558
+
+**Method**: `Ledger::apply_verify()`
+
+**Current Code**:
+```rust
+let verified = articles
+    .codex()
+    .verify(self.contract_id(), operation, &self.0.state().raw, articles)
+    .map_err(AcceptError::from)?;
+```
+
+**This is where AluVM executes**. To replace with alternative execution:
+1. Replace `codex().verify()` call
+2. Maintain `VerifiedOperation` return type
+3. Keep RGB state management unchanged
 
 ---
 
@@ -3110,6 +3196,647 @@ WitnessStatus::Archived => "archived"
 - Status badges with colors (green for confirmed, yellow for pending)
 - Clickable Bitcoin TX links to mempool.space
 - Contextual success messages based on import type
+
+---
+
+## Sonic Ledger Execution Path Analysis
+
+### Research Date: November 6, 2025
+
+### Purpose
+Deep analysis of `sonic/src/ledger.rs` to understand the execution flow for modifying contract verification logic. This research identifies all call sites, data structures, and dependencies required for implementing alternative execution engines.
+
+---
+
+### Call Site Analysis
+
+#### `Ledger::apply_verify()` Call Sites
+
+**Search Command**: `grep -rn "apply_verify" sonic/ rgb-std/ wallet/ --include="*.rs"`
+
+**Results**:
+
+1. **`sonic/src/deed.rs:99`**
+   ```rust
+   self.ledger.apply_verify(deed, true)?;
+   ```
+   - Context: DeedBuilder commit operation
+   - Caller: `DeedBuilder::commit()` method
+   - Force parameter: `true` (always force apply)
+
+2. **`sonic/src/ledger.rs:453`**
+   ```rust
+   self.apply_verify(op, false)?;
+   ```
+   - Context: Internal ledger operation processing
+   - Caller: Within `Ledger` implementation (inferred from context)
+   - Force parameter: `false` (normal verification)
+
+3. **`sonic/src/ledger.rs:495`**
+   ```rust
+   self.apply_verify(op, true)?;
+   ```
+   - Context: Internal ledger operation processing with force flag
+   - Caller: Within `Ledger` implementation (inferred from context)
+   - Force parameter: `true` (skip duplicate check)
+
+4. **`sonic/src/ledger.rs:544`** - Method Definition
+   ```rust
+   pub fn apply_verify(
+       &mut self,
+       operation: Operation,
+       force: bool,
+   ) -> Result<bool, MultiError<AcceptError, S::Error>>
+   ```
+
+**Key Finding**: Only **3 call sites** in the entire codebase, all within `sonic` crate. RGB-std does NOT directly call `apply_verify()`.
+
+**Implication**: Async propagation is limited to `sonic` crate only, significantly reducing complexity.
+
+---
+
+### Data Structure Analysis
+
+#### 1. Operation Structure
+
+**Location**: `ultrasonic/src/operation.rs:347-396`
+
+**Structure**:
+```rust
+pub struct Operation {
+    pub version: ReservedBytes<1>,         // Operation version
+    pub contract_id: ContractId,            // Target contract
+    pub call_id: CallId,                    // Method being called
+    pub nonce: fe256,                       // Nonce for uniqueness
+    pub witness: StateValue,                // Operation witness data
+    pub destructible_in: SmallVec<Input>,   // Read-once inputs (consumed)
+    pub immutable_in: SmallVec<CellAddr>,   // Read-only inputs
+    pub destructible_out: SmallVec<StateCell>, // New destructible outputs
+    pub immutable_out: SmallVec<StateData>,    // New immutable outputs
+}
+```
+
+**Key Fields for Extraction**:
+- `call_id`: Maps to contract method name via Articles API
+- `destructible_in`: Contains input seals (from_seal in transfers)
+- `destructible_out`: Contains output seals (to_seal in transfers) and amounts
+- `witness`: Additional operation data
+
+**StateCell Structure** (`ultrasonic/src/operation.rs:214-242`):
+```rust
+pub struct StateCell {
+    pub auth: AuthToken,       // Seal identifier (UTXO reference)
+    pub data: StateAtom,       // State data (token amount, etc.)
+    pub lock: Option<Lock>,    // Access conditions
+    pub witness: StateValue,   // Witness data
+}
+```
+
+**Input Structure** (`ultrasonic/src/operation.rs:215-227`):
+```rust
+pub struct Input {
+    pub addr: CellAddr,        // Previous operation address
+    pub reserved: u32,
+    pub witness: StateValue,
+}
+```
+
+---
+
+#### 2. Articles Structure
+
+**Location**: `sonic/api/src/articles.rs:110-209`
+
+**Structure**:
+```rust
+pub struct Articles {
+    semantics: Semantics,      // Type system and APIs
+    sig: Option<SigBlob>,      // Issuer signature
+    issue: Issue,              // Contract issue info (metadata)
+}
+```
+
+**Key Methods**:
+- `default_api()` → `&Api` - Get contract API definition
+- `issue()` → `&Issue` - Get contract metadata (name, ticker, etc.)
+- `codex()` → `&Codex` - Get AluVM codex (verification logic)
+- `genesis()` → `&Genesis` - Get genesis operation
+- `contract_meta()` → `&ContractMeta` - Get contract metadata
+- `contract_name()` → `&ContractName` - Get contract name
+
+**Issue Structure** (from context):
+```rust
+pub struct Issue {
+    pub codex: Codex,          // Contract verification logic
+    pub genesis: Genesis,       // Genesis operation
+    pub meta: ContractMeta,     // Contract metadata (name, issuer, etc.)
+}
+
+pub struct ContractMeta {
+    pub name: ContractName,
+    pub issuer: Identity,
+    pub ticker: Option<String>,  // Inferred from usage
+    pub timestamp: DateTime<Utc>,
+}
+```
+
+---
+
+#### 3. AcceptError Enum
+
+**Location**: `sonic/src/ledger.rs:620-641`
+
+**Current Structure**:
+```rust
+#[derive(Debug, Display, Error, From)]
+#[display(inner)]
+pub enum AcceptError {
+    #[from]
+    Io(io::Error),
+
+    #[from]
+    Articles(SemanticError),
+
+    #[from]
+    Verify(CallError),
+
+    #[from]
+    Decode(DecodeError),
+
+    #[from]
+    Serialize(SerializeError),
+
+    Persistence(String),
+
+    #[cfg(feature = "binfile")]
+    #[display("Invalid file format")]
+    InvalidFileFormat,
+}
+```
+
+**Required Extensions**:
+- Connection errors (network/gRPC failures)
+- Execution errors (remote execution failures)
+- Invalid operation structure (missing required fields)
+- Unsupported operations (methods not implemented)
+- Value parsing errors (invalid amounts, types)
+
+---
+
+### Current Execution Flow
+
+**From**: `sonic/src/ledger.rs:544-567`
+
+```rust
+pub fn apply_verify(
+    &mut self,
+    operation: Operation,
+    force: bool,
+) -> Result<bool, MultiError<AcceptError, S::Error>> {
+    // 1. Validate contract ID
+    if operation.contract_id != self.contract_id() {
+        return Err(MultiError::A(AcceptError::Articles(
+            SemanticError::ContractMismatch
+        )));
+    }
+
+    let opid = operation.opid();
+    let present = self.0.is_valid(opid);
+    let articles = self.0.articles();
+    
+    // 2. Execute if not present or forced
+    if !present || force {
+        // *** CRITICAL: AluVM EXECUTION HAPPENS HERE ***
+        let verified = articles
+            .codex()
+            .verify(
+                self.contract_id(),
+                operation,
+                &self.0.state().raw,  // Memory interface
+                articles              // LibRepo interface
+            )
+            .map_err(AcceptError::from)
+            .map_err(MultiError::A)?;
+        
+        // 3. Apply verified operation to state
+        self.apply_internal(opid, verified, present && !force)
+            .map_err(MultiError::B)?;
+    }
+    
+    Ok(present)
+}
+```
+
+**Key Observation**: The `codex().verify()` call is synchronous. Making this async requires:
+1. Change method signature to `async fn`
+2. Add `.await` to verification call
+3. Propagate async to all 3 call sites
+4. Update `Stock` trait if it requires async operations
+
+---
+
+### Stock Trait Reference
+
+**Location**: `sonic/src/stock.rs:44` (not fully examined)
+
+**Purpose**: Persistence abstraction for contract state
+
+**Known Methods** (from usage in `ledger.rs`):
+- `articles()` → `&Articles`
+- `state()` → State reference
+- `is_valid(opid)` → Check if operation exists
+- `mark_valid(opid)` → Mark operation as validated
+- `commit_transaction()` → Persist changes
+
+**Async Concern**: If `Stock` trait requires async persistence, this adds complexity. However, most persistence is likely synchronous (filesystem operations).
+
+---
+
+### Bitcoin Witness/TXID Access
+
+**Challenge**: How to get current Bitcoin transaction ID for RGB operation anchoring?
+
+**Location to Investigate**:
+- `rgb-std/src/pile.rs` - Witness management
+- `Witness` struct contains `id: Seal::WitnessId` (which IS `Txid` for Bitcoin)
+
+**From Previous Research** (`rgb-runtime-research-findings.md:1972`):
+```rust
+pub struct Witness<Seal: RgbSeal> {
+    pub id: Seal::WitnessId,           // For TxoSeal, this IS Txid!
+    pub published: Seal::Published,     // Block height/anchor data
+    pub client: Seal::Client,           // DBC commitment data
+    pub status: WitnessStatus,          // Mining status
+    pub opids: HashSet<Opid>,          // Operation IDs
+}
+```
+
+**Access Pattern** (needs confirmation):
+```rust
+// Within Ledger, need to access witness data
+let witnesses = self.0.witnesses(); // If Stock exposes this
+let current_witness = witnesses.last()?;
+let bitcoin_txid = current_witness.id.to_string();
+```
+
+**Alternative**: Bitcoin TXID may be provided by caller (RGB-std layer) and needs to be passed through.
+
+---
+
+### Async Propagation Scope
+
+**Analysis**: Based on call site discovery, async propagation is **minimal**.
+
+**Required Changes**:
+
+1. **`sonic/src/ledger.rs`**:
+   - Make `apply_verify()` async
+   - Update 2 internal call sites (lines 453, 495) with `.await`
+
+2. **`sonic/src/deed.rs`**:
+   - Make `DeedBuilder::commit()` async
+   - Update line 99 with `.await`
+
+3. **RGB-std layer** (if any):
+   - Check if RGB-std calls `DeedBuilder::commit()` directly
+   - Likely minimal impact
+
+**No trait constraints found**: `apply_verify()` is NOT part of a trait interface, making async conversion straightforward.
+
+---
+
+### Key Findings Summary
+
+#### ✅ Confirmed
+
+1. **Limited Call Sites**: Only 3 call sites for `apply_verify()`, all in `sonic` crate
+2. **Clear Data Structures**: Operation, Articles, AcceptError are well-defined
+3. **Synchronous Current Flow**: No existing async in verification path
+4. **No Trait Barriers**: `apply_verify()` is not a trait method
+
+#### ⚠️ Investigation Results
+
+All four investigation items have been completed:
+
+##### 1. Bitcoin TXID Access ✅ **RESOLVED**
+
+**Challenge**: How to get current Bitcoin transaction ID from within `Ledger`?
+
+**Finding**: Bitcoin TXID is NOT available at the `Ledger` level. It exists at the RGB-std layer (`Pile`/`Witness`).
+
+**Solution**: Bitcoin TXID must be passed as a parameter to the execution context OR retrieved after operation is applied via witness tracking. For initial implementation, use a placeholder or default value, as the RGB operation itself doesn't contain the Bitcoin TXID - it's added later during witness publishing.
+
+**Alternative Approach**: Extract TXID from the `operation.witness` field if populated, or default to a deterministic placeholder like the operation ID.
+
+##### 2. Stock Trait Async Requirements ✅ **CONFIRMED SYNCHRONOUS**
+
+**Location**: `sonic/src/stock.rs:44-393`
+
+**Finding**: The `Stock` trait is **entirely synchronous**. All methods return regular `Result` types, not `Future`s.
+
+**Key Methods** (all synchronous):
+```rust
+pub trait Stock {
+    fn new(...) -> Result<Self, Self::Error>;
+    fn load(...) -> Result<Self, Self::Error>;
+    fn articles(&self) -> &Articles;  // No I/O
+    fn state(&self) -> &EffectiveState;  // No I/O
+    fn is_valid(&self, opid: Opid) -> bool;
+    fn has_operation(&self, opid: Opid) -> bool;  // MAY BE blocking
+    fn operation(&self, opid: Opid) -> Option<Operation>;  // MAY BE blocking
+    // ... more methods
+}
+```
+
+**Implication**: No async constraints from `Stock` trait. Making `Ledger::apply_verify()` async will NOT break the trait contract.
+
+**Note**: Some methods are marked "MAY BE blocking" for I/O, but they use **synchronous blocking I/O**, not async.
+
+##### 3. Call ID to Method Name Mapping ✅ **RESOLVED**
+
+**Location**: `sonic/api/src/api.rs:368`
+
+**Finding**: The `Api` struct has a `verifiers` field that maps **MethodName → CallId**:
+
+```rust
+pub struct Api {
+    // ...
+    pub verifiers: TinyOrdMap<MethodName, CallId>,
+    // ...
+}
+```
+
+**To Get Method Name from CallId**:
+```rust
+// Reverse lookup - iterate through map
+let method_name = articles.default_api()
+    .verifiers
+    .iter()
+    .find(|(_, &call_id)| call_id == operation.call_id)
+    .map(|(name, _)| name.clone())
+    .ok_or(AcceptError::UnsupportedOperation(format!("{:?}", operation.call_id)))?;
+
+let method_str = method_name.as_str();
+```
+
+**Helper Method Available** (line 392):
+```rust
+impl Api {
+    pub fn verifier(&self, method: impl Into<MethodName>) -> Option<CallId> {
+        self.verifiers.get(&method.into()).copied()
+    }
+}
+```
+
+**For Reverse Lookup** (call_id → method_name), need custom iteration.
+
+##### 4. StateAtom to Primitive Extraction ✅ **RESOLVED**
+
+**Location**: `sonic/api/src/state/data.rs:32`
+
+**Finding**: `StateAtom` wraps `StrictVal` from `strict_types` crate:
+
+```rust
+pub struct StateAtom {
+    pub verified: StrictVal,      // The actual value
+    pub unverified: Option<StrictVal>,
+}
+```
+
+**Extraction Strategy**:
+
+**Option A: Use Display trait** (from line 424 of this document):
+```rust
+let amount_str = state_atom.verified.to_string();
+let amount = amount_str.parse::<u64>()
+    .map_err(|_| AcceptError::InvalidValue(amount_str.clone()))?;
+```
+
+**Option B: Match on StrictVal variants** (if enum access available):
+```rust
+match state_atom.verified {
+    StrictVal::Number(num) => {
+        // Extract u64 from number type
+        let amount = num.as_u64()?;
+    }
+    _ => return Err(AcceptError::InvalidValue("Expected number")),
+}
+```
+
+**Recommended**: Use Option A (Display + parse) for robustness, with graceful error handling for non-numeric values.
+
+**For Seals (AuthToken)**:
+```rust
+let seal = state_cell.auth.to_string();  // AuthToken also has Display
+```
+
+#### 🎯 Next Steps for Implementation
+
+1. ✅ **All investigations complete**
+2. **Review existing error types** in `rgb-std/src/f1r3node_error.rs`
+3. **Determine which errors need to be added** to `AcceptError` in `sonic`
+4. **Implement operation data extractor** (pure transformation, no execution)
+5. **Test extractor** with mock operations before async conversion
+
+---
+
+### References for Implementation
+
+**Key Source Files**:
+- `/sonic/src/ledger.rs:544-567` - `apply_verify()` method
+- `/ultrasonic/src/operation.rs:347-396` - `Operation` structure
+- `/sonic/api/src/articles.rs:110-209` - `Articles` structure
+- `/sonic/src/ledger.rs:620-641` - `AcceptError` enum
+- `/sonic/src/deed.rs:95-103` - DeedBuilder usage
+- `/rgb-std/src/pile.rs` - Witness management (for TXID)
+
+**Research Status**: ✅ **Task 2.2.1 Complete** - All investigations resolved. Ready to proceed with Task 2.2.2 (Error Types)
+
+---
+
+### Task 2.2.2 Analysis: AcceptError Extensions Required
+
+#### Current State Assessment
+
+**Existing Error Infrastructure**:
+- ✅ `rgb-std/src/f1r3node_error.rs` - Complete F1r3node error types (10 variants)
+  - `F1r3nodeError` - Core f1r3node operations
+  - `ConsignmentExtensionError` - Consignment handling
+  - `F1r3nodeVerificationError` - Verification failures
+- ✅ `rgb-std/src/contract.rs` - `ConsumeError` already has F1r3node variants (lines updated in Phase 1)
+- ❌ `sonic/src/ledger.rs` - `AcceptError` DOES NOT have f1r3node variants yet
+
+**Gap Analysis**:
+
+The `AcceptError` enum in `sonic/src/ledger.rs:620-641` needs new variants to support f1r3node execution errors at the Sonic layer.
+
+**Current `AcceptError`** (7 variants):
+```rust
+pub enum AcceptError {
+    Io(io::Error),                    // Filesystem errors
+    Articles(SemanticError),          // Contract semantics errors
+    Verify(CallError),                // AluVM verification errors
+    Decode(DecodeError),              // Deserialization errors
+    Serialize(SerializeError),        // Serialization errors
+    Persistence(String),              // Storage errors
+    #[cfg(feature = "binfile")]
+    InvalidFileFormat,                // Binary file format errors
+}
+```
+
+#### Required New Variants
+
+Based on Task 2.2 implementation needs and integration with `F1r3nodeError` from rgb-std:
+
+##### 1. F1r3nodeConnection - Remote Connection Errors
+```rust
+/// Failed to connect to f1r3node for remote execution
+#[display("F1r3node connection error: {0}")]
+F1r3nodeConnection(String),
+```
+
+**Usage**: When `F1r3flyConnectionManager::from_env()` fails or network is unavailable.
+
+**Mapping from**: `F1r3nodeError::ConnectionFailed`, `F1r3nodeError::GrpcError`
+
+##### 2. F1r3nodeExecution - Remote Execution Errors
+```rust
+/// F1r3node execution failed
+#[display("F1r3node execution error: {0}")]
+F1r3nodeExecution(String),
+```
+
+**Usage**: When `deploy_and_wait()` fails or f1r3node rejects the Rholang code.
+
+**Mapping from**: `F1r3nodeError::DeploymentFailed`, `F1r3nodeError::BlockNotFinalized`, `F1r3nodeError::Timeout`
+
+##### 3. InvalidOperation - Malformed Operation Data
+```rust
+/// Invalid operation structure
+#[display("Invalid operation: {0}")]
+InvalidOperation(String),
+```
+
+**Usage**: When operation data extraction fails (missing required fields, invalid structure).
+
+**Example**: Transfer operation without `destructible_in`, issue without `destructible_out`.
+
+##### 4. UnsupportedOperation - Unknown Method
+```rust
+/// Unsupported operation type
+#[display("Unsupported operation: {0}")]
+UnsupportedOperation(String),
+```
+
+**Usage**: When operation's `call_id` doesn't map to any known method name in API.
+
+**Example**: Operation with `call_id = 99` but API only defines methods 0-2.
+
+##### 5. InvalidValue - Type Conversion Errors
+```rust
+/// Invalid value in operation
+#[display("Invalid value: {0}")]
+InvalidValue(String),
+```
+
+**Usage**: When `StateAtom` → primitive type conversion fails.
+
+**Example**: Expected u64 amount but got string, negative number, or non-numeric value.
+
+##### 6. MissingInput - Operation Validation
+```rust
+/// Missing input in operation
+#[display("Missing input in operation")]
+MissingInput,
+```
+
+**Usage**: When transfer operation requires input (consumed seals) but `destructible_in` is empty.
+
+**Example**: Transfer without specifying which seal to spend from.
+
+##### 7. MissingOutput - Operation Validation
+```rust
+/// Missing output in operation
+#[display("Missing output in operation")]
+MissingOutput,
+```
+
+**Usage**: When operation requires output (new seals) but `destructible_out` is empty.
+
+**Example**: Issue operation without specifying where tokens go, transfer without destination.
+
+##### 8. RholangGeneration - Code Generation Errors
+```rust
+/// Failed to generate Rholang code from operation
+#[display("Rholang generation error: {0}")]
+RholangGeneration(String),
+```
+
+**Usage**: When `RholangGenerator::generate()` fails.
+
+**Example**: Unsupported operation type, invalid context, template substitution failure.
+
+#### Integration Strategy
+
+**Option A: Direct Variants** (Simple, but verbose)
+```rust
+#[derive(Debug, Display, Error, From)]
+#[display(inner)]
+pub enum AcceptError {
+    // ... existing variants ...
+    
+    F1r3nodeConnection(String),
+    F1r3nodeExecution(String),
+    InvalidOperation(String),
+    UnsupportedOperation(String),
+    InvalidValue(String),
+    MissingInput,
+    MissingOutput,
+    RholangGeneration(String),
+}
+```
+
+**Option B: Nested F1r3nodeError** (Clean, reuses existing types)
+```rust
+#[derive(Debug, Display, Error, From)]
+#[display(inner)]
+pub enum AcceptError {
+    // ... existing variants ...
+    
+    #[from]
+    #[display(inner)]
+    F1r3node(rgb::f1r3node_error::F1r3nodeError),
+    
+    // Operation-specific errors still at this level
+    InvalidOperation(String),
+    UnsupportedOperation(String),
+    InvalidValue(String),
+    MissingInput,
+    MissingOutput,
+}
+```
+
+**Recommendation**: **Option A** for Task 2.2.2
+
+**Rationale**:
+1. Sonic crate should NOT depend on rgb-std (architecture violation)
+2. Simple string-based errors are sufficient for Sonic layer
+3. Conversion from `F1r3nodeError` → `AcceptError` happens at RGB-std layer
+4. Keeps error types simple and focused
+
+#### Implementation Plan for Task 2.2.2
+
+1. **Locate `AcceptError` enum** in `sonic/src/ledger.rs:620`
+2. **Add 8 new variants** as listed above
+3. **Implement `Display` trait** for new variants (already auto-derived)
+4. **Verify compilation** - ensure no breaking changes
+5. **No test changes needed** - errors won't be triggered until Task 2.2.3
+
+**Estimated Time**: 15-30 minutes
+
+**Dependencies**: None (Task 2.2.1 complete, no external dependencies)
+
+**Next Task**: After 2.2.2, proceed to Task 2.2.3 (Operation Extractor implementation)
 
 ---
 

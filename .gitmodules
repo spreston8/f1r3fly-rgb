@@ -21,7 +21,7 @@
 [submodule "rust-client"]
 	path = rust-client
 	url = git@github.com:F1R3FLY-io/rust-client.git
-	branch = main
+	branch = rgb
 [submodule "f1r3node"]
 	path = f1r3node
 	url = git@github.com:F1R3FLY-io/f1r3node.git
@@ -45,3 +45,24 @@
 [submodule "ultrasonic"]
 	path = ultrasonic
 	url = git@github.com:AluVM/ultrasonic.git
+[submodule "bp-core"]
+	path = bp-core
+	url = git@github.com:BP-WG/bp-core.git
+[submodule "bdk_wallet"]
+	path = bdk_wallet
+	url = git@github.com:bitcoindevkit/bdk_wallet.git
+[submodule "lnp-node"]
+	path = lnp-node
+	url = git@github.com:LNP-WG/lnp-node.git
+[submodule "rgb-lightning-node"]
+	path = rgb-lightning-node
+	url = git@github.com:RGB-Tools/rgb-lightning-node.git
+[submodule "LNPBPs"]
+	path = LNPBPs
+	url = git@github.com:LNP-BP/LNPBPs.git
+[submodule "f1r3fly-rgb"]
+	path = f1r3fly-rgb
+	url = git@github.com:spreston8/f1r3fly-rgb.git
+[submodule "f1r3fly-rgb-wallet"]
+	path = f1r3fly-rgb-wallet
+	url = git@github.com:spreston8/f1r3fly-rgb-wallet.git
