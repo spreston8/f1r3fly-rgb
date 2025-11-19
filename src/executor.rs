@@ -16,7 +16,7 @@ use node_cli::connection_manager::F1r3flyConnectionManager;
 use node_cli::registry::{generate_insert_signed_signature, public_key_to_uri};
 use node_cli::rholang_helpers::convert_rholang_to_json;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use strict_types::StrictVal;
 
@@ -541,7 +541,10 @@ impl F1r3flyExecutor {
         // Serialize parameters
         log::info!("   📝 EXECUTOR: call_method - Raw params: {:?}", params);
         let serialized_params = serialize_params(params)?;
-        log::info!("   📝 EXECUTOR: call_method - Serialized params: '{}'", serialized_params);
+        log::info!(
+            "   📝 EXECUTOR: call_method - Serialized params: '{}'",
+            serialized_params
+        );
 
         // Build parameter list with proper comma handling
         let param_list = if serialized_params.is_empty() {
@@ -609,7 +612,10 @@ impl F1r3flyExecutor {
         // Serialize parameters
         log::info!("   📋 EXECUTOR: query_state - Raw params: {:?}", params);
         let serialized_params = serialize_params(params)?;
-        log::info!("   📋 EXECUTOR: query_state - Serialized params: '{}'", serialized_params);
+        log::info!(
+            "   📋 EXECUTOR: query_state - Serialized params: '{}'",
+            serialized_params
+        );
 
         // Build parameter list with proper comma handling
         let param_list = if serialized_params.is_empty() {
@@ -691,6 +697,138 @@ impl F1r3flyExecutor {
     /// Use this if you have a contract deployed elsewhere and want to call it.
     pub fn register_contract(&mut self, contract_id: ContractId, metadata: ContractMetadata) {
         self.contracts.insert(contract_id, metadata);
+    }
+    /// Query contract state by registry URI (without requiring local registration)
+    ///
+    /// This method allows querying contracts that exist on F1r3fly but aren't
+    /// registered in the local executor's contracts HashMap. Useful for consignment
+    /// acceptance where Bob needs to query Alice's contract metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `registry_uri` - The rho:id:... URI of the contract on F1r3fly
+    /// * `query_method` - Method name to call (e.g., "getMetadata", "balanceOf")
+    /// * `params` - Method parameters as (name, value) tuples
+    ///
+    /// # Returns
+    ///
+    /// JSON response from the contract query
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let metadata = executor.query_by_registry_uri(
+    ///     "rho:id:abc123...",
+    ///     "getMetadata",
+    ///     &[]
+    /// ).await?;
+    /// ```
+    pub async fn query_by_registry_uri(
+        &self,
+        registry_uri: &str,
+        query_method: &str,
+        params: &[(&str, StrictVal)],
+    ) -> Result<Value, F1r3flyRgbError> {
+        log::info!(
+            "🔍 Querying '{}' on contract at registry URI: {}",
+            query_method,
+            registry_uri
+        );
+
+        // Serialize parameters
+        log::debug!(
+            "   📋 EXECUTOR: query_by_registry_uri - Raw params: {:?}",
+            params
+        );
+        let serialized_params = serialize_params(params)?;
+        log::debug!(
+            "   📋 EXECUTOR: query_by_registry_uri - Serialized params: '{}'",
+            serialized_params
+        );
+
+        // Build parameter list with proper comma handling
+        let param_list = if serialized_params.is_empty() {
+            String::from("*resultCh")
+        } else {
+            format!("{}, *resultCh", serialized_params)
+        };
+
+        // Build registry lookup + query call with return!() PATTERN
+        let query_rholang = format!(
+            r#"new return, rl(`rho:registry:lookup`), contractCh, resultCh in {{
+  rl!(`{}`, *contractCh) |
+  for(@(_, contractBundle) <- contractCh) {{
+    @{{contractBundle}}!("{}", {}) |
+    for(@result <- resultCh) {{
+      return!(result)
+    }}
+  }}
+}}"#,
+            registry_uri, query_method, param_list
+        );
+
+        log::debug!("   📜 Generated query Rholang:\n{}", query_rholang);
+
+        // Use HTTP API (not gRPC) for complex responses
+        let config = self.connection.config();
+        let url = format!(
+            "http://{}:{}/api/explore-deploy",
+            config.node_host, config.http_port
+        );
+
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&json!({ "term": query_rholang }))
+            .send()
+            .await
+            .map_err(|e| F1r3flyRgbError::InvalidResponse(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(F1r3flyRgbError::InvalidResponse(format!(
+                "Query failed with status {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            )));
+        }
+
+        let response_json: Value = response.json().await.map_err(|e| {
+            F1r3flyRgbError::InvalidResponse(format!("Failed to parse response JSON: {}", e))
+        })?;
+
+        log::debug!(
+            "   📥 Raw JSON response: {}",
+            serde_json::to_string_pretty(&response_json).unwrap_or_default()
+        );
+
+        // Extract result using same parsing logic as query_state
+        let expr_array = response_json["expr"].as_array().ok_or_else(|| {
+            F1r3flyRgbError::InvalidResponse(format!(
+                "Response missing 'expr' array: {:?}",
+                response_json
+            ))
+        })?;
+
+        // Check if expr array is empty (contract not found or method returned no data)
+        if expr_array.is_empty() {
+            log::warn!("   ⚠️  Empty expr array - contract may not exist at registry URI or method returned no data");
+            log::warn!("   Registry URI: {}", registry_uri);
+            log::warn!("   Method: {}", query_method);
+
+            // Return empty object instead of error for better handling
+            return Ok(json!({}));
+        }
+
+        let expr = expr_array.first().ok_or_else(|| {
+            F1r3flyRgbError::InvalidResponse(format!(
+                "Failed to get first element from expr array: {:?}",
+                response_json
+            ))
+        })?;
+
+        log::info!("   📊 Parsed result: {:?}", expr);
+
+        Ok(expr.clone())
     }
 }
 

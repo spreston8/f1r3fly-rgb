@@ -73,9 +73,13 @@ pub struct F1r3flyConsignment {
     pub seals: SmallOrdMap<u16, WTxoSeal>,
 
     /// Witness transactions (Bitcoin TX confirmations)
-    /// Required for full Tapret proof verification
+    /// Required for full Tapret proof verification (not required for genesis)
     /// Stores the actual Bitcoin transactions (not full Witness struct)
     pub witness_txs: Vec<Tx>,
+
+    /// Whether this is a genesis consignment (vs transfer)
+    /// Genesis consignments don't require Tapret proof validation
+    pub is_genesis: bool,
 }
 
 /// F1r3fly state proof for consignment validation
@@ -101,7 +105,8 @@ impl F1r3flyConsignment {
     /// * `contract` - Source contract
     /// * `result` - F1r3fly execution result (contains state proof)
     /// * `seals` - Seals for this transfer
-    /// * `witnesses` - Bitcoin witnesses (TX confirmations)
+    /// * `witness_txs` - Bitcoin witnesses (TX confirmations)
+    /// * `is_genesis` - Whether this is a genesis consignment (skips Tapret validation)
     ///
     /// # Returns
     ///
@@ -120,6 +125,7 @@ impl F1r3flyConsignment {
     ///     result,
     ///     seals,
     ///     witness_txs,
+    ///     true, // is_genesis
     /// )?;
     /// # Ok(())
     /// # }
@@ -129,6 +135,7 @@ impl F1r3flyConsignment {
         result: F1r3flyExecutionResult,
         seals: SmallOrdMap<u16, WTxoSeal>,
         witness_txs: Vec<Tx>,
+        is_genesis: bool,
     ) -> Result<Self, F1r3flyRgbError> {
         // Convert SmallVec to String for serialization
         let block_hash = result
@@ -138,22 +145,30 @@ impl F1r3flyConsignment {
             .deploy_id_string()
             .map_err(|e| F1r3flyRgbError::InvalidResponse(format!("Invalid deploy ID: {}", e)))?;
 
-        // Get anchor from contract tracker
+        // Get anchor from contract tracker (or create placeholder for genesis)
         let opid_bytes: [u8; 32] = result.state_hash;
         let opid = rgb::Opid::from(opid_bytes);
 
-        let bitcoin_anchor = contract
-            .tracker()
-            .get_anchor(&opid)
-            .cloned()
-            .ok_or_else(|| {
-                F1r3flyRgbError::InvalidConsignment(format!(
-                    "No anchor found for operation {}. \
-                     Wallet must call tracker.add_anchor() after PSBT finalization \
-                     before creating consignment.",
-                    hex::encode(opid_bytes)
-                ))
-            })?;
+        let bitcoin_anchor = if is_genesis {
+            // Genesis doesn't need real anchor - use placeholder
+            // Genesis UTXO itself serves as the Bitcoin anchor
+            use strict_types::StrictDumb;
+            Anchor::strict_dumb()
+        } else {
+            // Transfer requires real anchor from tracker (with Tapret proof)
+            contract
+                .tracker()
+                .get_anchor(&opid)
+                .cloned()
+                .ok_or_else(|| {
+                    F1r3flyRgbError::InvalidConsignment(format!(
+                        "No anchor found for operation {}. \
+                         Wallet must call tracker.add_anchor() after PSBT finalization \
+                         before creating consignment.",
+                        hex::encode(opid_bytes)
+                    ))
+                })?
+        };
 
         Ok(Self {
             version: 1,
@@ -167,6 +182,7 @@ impl F1r3flyConsignment {
             bitcoin_anchor,
             seals,
             witness_txs,
+            is_genesis,
         })
     }
 
@@ -217,41 +233,63 @@ impl F1r3flyConsignment {
 
         // State hash is implicitly verified through:
         // - Block finalization (proves F1r3fly state is immutable)
-        // - Step 2 below (Bitcoin anchor verifies Tapret commitment)
+        // - Step 2 below (Bitcoin anchor verifies Tapret commitment) - ONLY FOR TRANSFERS
 
-        // 2. Verify Bitcoin anchor - full cryptographic verification
-        log::debug!("Verifying Bitcoin anchor with Tapret proof");
+        // 2. Verify Bitcoin anchor
+        // For GENESIS: Skip Tapret verification (genesis UTXO itself is the Bitcoin anchor)
+        // For TRANSFER: Full Tapret cryptographic verification required
+        if self.is_genesis {
+            log::debug!("✓ Genesis consignment - Tapret verification skipped (not required)");
+            log::debug!("  Genesis UTXO serves as Bitcoin anchor");
 
-        // Check Tapret proof exists
-        let tapret_proof = self.bitcoin_anchor.dbc_proof.as_ref().ok_or_else(|| {
-            F1r3flyRgbError::InvalidConsignment(
-                "Anchor missing Tapret proof (dbc_proof). \
+            // Verify we have at least one seal (the genesis seal)
+            if self.seals.is_empty() {
+                return Err(F1r3flyRgbError::InvalidConsignment(
+                    "Genesis consignment must have at least one seal".to_string(),
+                ));
+            }
+
+            // Verify we have the genesis transaction in witnesses
+            if self.witness_txs.is_empty() {
+                return Err(F1r3flyRgbError::InvalidConsignment(
+                    "Genesis consignment must include genesis UTXO transaction".to_string(),
+                ));
+            }
+        } else {
+            // TRANSFER: Require full Tapret proof
+            log::debug!("Verifying Bitcoin anchor with Tapret proof (transfer consignment)");
+
+            // Check Tapret proof exists
+            let tapret_proof = self.bitcoin_anchor.dbc_proof.as_ref().ok_or_else(|| {
+                F1r3flyRgbError::InvalidConsignment(
+                    "Transfer consignment missing Tapret proof (dbc_proof). \
                      Cannot verify Bitcoin commitment."
-                    .to_string(),
-            )
-        })?;
-
-        // Get Bitcoin transaction from witness
-        let witness_tx = self.witness_txs.first().ok_or_else(|| {
-            F1r3flyRgbError::InvalidConsignment(
-                "No witness transaction for Tapret verification. \
-                 Consignment must include Bitcoin transaction."
-                    .to_string(),
-            )
-        })?;
-
-        // Perform full cryptographic verification
-        use crate::verify_tapret_proof_in_tx;
-        verify_tapret_proof_in_tx(witness_tx, self.f1r3fly_proof.state_hash, tapret_proof)
-            .map_err(|e| {
-                F1r3flyRgbError::InvalidConsignment(format!(
-                    "Tapret proof verification failed: {}",
-                    e
-                ))
+                        .to_string(),
+                )
             })?;
 
-        log::debug!("✓ Tapret proof cryptographically verified");
-        log::debug!("   Witness TX count: {}", self.witness_txs.len());
+            // Get Bitcoin transaction from witness
+            let witness_tx = self.witness_txs.first().ok_or_else(|| {
+                F1r3flyRgbError::InvalidConsignment(
+                    "No witness transaction for Tapret verification. \
+                     Transfer consignment must include Bitcoin transaction."
+                        .to_string(),
+                )
+            })?;
+
+            // Perform full cryptographic verification
+            use crate::verify_tapret_proof_in_tx;
+            verify_tapret_proof_in_tx(witness_tx, self.f1r3fly_proof.state_hash, tapret_proof)
+                .map_err(|e| {
+                    F1r3flyRgbError::InvalidConsignment(format!(
+                        "Tapret proof verification failed: {}",
+                        e
+                    ))
+                })?;
+
+            log::debug!("✓ Tapret proof cryptographically verified");
+            log::debug!("   Witness TX count: {}", self.witness_txs.len());
+        }
 
         // 3. Verify seals are valid
         if self.seals.is_empty() {

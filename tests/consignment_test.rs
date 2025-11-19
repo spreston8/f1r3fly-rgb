@@ -125,7 +125,7 @@ async fn test_consignment_happy_path_with_validation() {
 
     // Step 6: Create consignment with real Bitcoin TX
     let witness_txs = vec![witness_tx.clone()];
-    let consignment = F1r3flyConsignment::new(&contract, issue_result, seals.clone(), witness_txs)
+    let consignment = F1r3flyConsignment::new(&contract, issue_result, seals.clone(), witness_txs, false)
         .expect("Failed to create consignment");
 
     // Step 7: Verify consignment structure
@@ -229,7 +229,7 @@ async fn test_consignment_fails_without_witness_transaction() {
     let empty_witness_txs = vec![]; // Empty!
 
     let consignment_result =
-        F1r3flyConsignment::new(&contract, issue_result, seals.clone(), empty_witness_txs);
+        F1r3flyConsignment::new(&contract, issue_result, seals.clone(), empty_witness_txs, false);
 
     // Should succeed creation (witness is optional at creation time)
     assert!(
@@ -286,7 +286,7 @@ async fn test_consignment_fails_without_anchor() {
 
     // Step 4: Try to create consignment WITHOUT anchor in tracker
     let consignment_result =
-        F1r3flyConsignment::new(&contract, issue_result, seals.clone(), witness_txs);
+        F1r3flyConsignment::new(&contract, issue_result, seals.clone(), witness_txs, false);
 
     // Should fail with specific error about missing anchor
     match consignment_result {
