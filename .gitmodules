@@ -66,3 +66,6 @@
 [submodule "f1r3fly-rgb-wallet"]
 	path = f1r3fly-rgb-wallet
 	url = git@github.com:spreston8/f1r3fly-rgb-wallet.git
+[submodule "rgb-wallet"]
+	path = rgb-wallet
+	url = git@github.com:spreston8/rgb-wallet.git
