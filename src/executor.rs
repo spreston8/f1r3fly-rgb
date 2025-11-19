@@ -684,7 +684,7 @@ impl F1r3flyExecutor {
             F1r3flyRgbError::QueryFailed(format!("Invalid JSON: {}", e))
         })?;
 
-        log::info!(
+        log::debug!(
             "   📥 Raw JSON response: {}",
             serde_json::to_string_pretty(&json_response)
                 .unwrap_or_else(|_| format!("{:?}", json_response))
