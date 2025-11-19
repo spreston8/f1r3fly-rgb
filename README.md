@@ -39,6 +39,7 @@ cargo test --test contract_test -- --test-threads=1
 cargo test --test contracts_test
 cargo test --test bitcoin_anchor_test
 cargo test --test consignment_test
+cargo test --test invoice_test
 cargo test --test f1r3fly_executor_test -- --test-threads=1
 ```
 
@@ -49,4 +50,5 @@ cargo test --test f1r3fly_executor_test -- --test-threads=1
 - **Contract Tests**: High-level API (`F1r3flyRgbContract`, `F1r3flyRgbContracts`)
 - **Executor Tests**: Low-level F1r3fly execution and state queries
 - **Consignment Tests**: Transfer package creation and validation
+- **Invoice Tests**: RGB invoice generation, parsing, seal extraction, and address extraction
 - **Anchor Tests**: Bitcoin witness tracking (`BitcoinAnchorTracker`)

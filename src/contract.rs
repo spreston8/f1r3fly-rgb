@@ -246,9 +246,9 @@ impl F1r3flyRgbContract {
             .await?;
 
         // Track seals in Bitcoin anchor tracker
-        // Convert hypersonic::Opid to rgb::Opid using byte array
-        let opid_bytes: [u8; 32] = result.state_hash;
-        let opid = rgb::Opid::from(opid_bytes);
+        // Use the opid from the execution result (not derived from state_hash)
+        // The opid is for RGB operation tracking, state_hash is for Bitcoin commitment
+        let opid = result.opid;
         self.tracker.add_seals(opid, seals);
 
         log::debug!(

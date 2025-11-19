@@ -1185,6 +1185,7 @@ dependencies = [
  "secp256k1 0.28.2",
  "serde",
  "serde_json",
+ "sha2",
  "strict_encoding",
  "strict_types",
  "tempfile",

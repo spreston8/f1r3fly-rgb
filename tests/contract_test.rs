@@ -222,8 +222,8 @@ async fn test_contract_lifecycle_with_seal_tracking() {
 
     // Step 4: Verify seals were tracked
 
-    // Convert state_hash to rgb::Opid for verification
-    let opid = rgb::Opid::from(result.state_hash);
+    // Use the opid from the execution result (not derived from state_hash)
+    let opid = result.opid;
 
     // Check that seals were added for this operation
     let tracked_seals = contract.tracker().seals(opid, 10);
@@ -301,7 +301,10 @@ async fn test_contract_lifecycle_with_seal_tracking() {
         .await
         .expect("Issue call failed");
 
-    log::info!("✅ TEST: Issue succeeded, state_hash: {}", hex::encode(issue_result.state_hash));
+    log::info!(
+        "✅ TEST: Issue succeeded, state_hash: {}",
+        hex::encode(issue_result.state_hash)
+    );
 
     // Verify issue operation succeeded
     assert_ne!(
@@ -311,7 +314,10 @@ async fn test_contract_lifecycle_with_seal_tracking() {
 
     // Now query the balance for the exact seal we just issued to
     // This tests the full workflow: issue → serialize → query → parse
-    log::info!("🔍 TEST: Querying balance for seal: {}", F1r3flyRgbContract::serialize_seal(&query_seal_for_balance));
+    log::info!(
+        "🔍 TEST: Querying balance for seal: {}",
+        F1r3flyRgbContract::serialize_seal(&query_seal_for_balance)
+    );
     let balance_result = contract.balance(&query_seal_for_balance).await;
 
     // Verify the balance matches what we issued - this is the key assertion!
@@ -377,7 +383,7 @@ async fn test_multiple_operations_with_seal_management() {
         .await
         .expect("Issue call failed");
 
-    let opid1 = rgb::Opid::from(result1.state_hash);
+    let opid1 = result1.opid;
 
     // Step 3: Perform second operation (transfer)
     let seals_op2 = create_test_seals_with_offset(2, 2001);
@@ -393,7 +399,7 @@ async fn test_multiple_operations_with_seal_management() {
         .await
         .expect("Transfer call failed");
 
-    let opid2 = rgb::Opid::from(result2.state_hash);
+    let opid2 = result2.opid;
 
     // Step 4: Perform third operation (another transfer)
     let seals_op3 = create_test_seals_with_offset(3, 2003);
@@ -409,7 +415,7 @@ async fn test_multiple_operations_with_seal_management() {
         .await
         .expect("Second transfer call failed");
 
-    let opid3 = rgb::Opid::from(result3.state_hash);
+    let opid3 = result3.opid;
 
     // Step 5: Verify all operations have unique state hashes
     assert_ne!(
@@ -505,7 +511,9 @@ async fn test_read_after_write_race_condition() {
 
     // Step 1: Create executor and issue contract
     let mut executor = F1r3flyExecutor::new().expect("Failed to create F1r3flyExecutor");
-    executor.set_derivation_index(test_derivation_offset("test_read_after_write_race_condition"));
+    executor.set_derivation_index(test_derivation_offset(
+        "test_read_after_write_race_condition",
+    ));
 
     let mut contract =
         F1r3flyRgbContract::issue(executor, "RACE", "Race Test Token", 10_000_000, 8)
@@ -577,10 +585,7 @@ async fn test_read_after_write_race_condition() {
     println!("   Expected:                   {}", test_amount);
 
     let all_balances = vec![balance_1, balance_2, balance_3, balance_4, balance_5];
-    let correct_count = all_balances
-        .iter()
-        .filter(|&&b| b == test_amount)
-        .count();
+    let correct_count = all_balances.iter().filter(|&&b| b == test_amount).count();
     let zero_count = all_balances.iter().filter(|&&b| b == 0).count();
 
     println!("\n🎯 RESULTS:");
@@ -589,7 +594,10 @@ async fn test_read_after_write_race_condition() {
 
     if zero_count > 0 {
         println!("\n❌ RACE CONDITION CONFIRMED:");
-        println!("   {} out of 5 queries returned 0 instead of {}", zero_count, test_amount);
+        println!(
+            "   {} out of 5 queries returned 0 instead of {}",
+            zero_count, test_amount
+        );
         println!("   This indicates treeHashMap.set() completion is not synchronized");
         println!("   with treeHashMap.getOrElse() in the Rholang contract.");
     } else if correct_count == 5 {

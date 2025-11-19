@@ -60,8 +60,8 @@ pub use tapret::{
 
 // Re-export invoice module API
 pub use invoice::{
-    extract_seal, generate_invoice, get_recipient_address, parse_invoice, GeneratedInvoice,
-    InvoiceRequest, ParsedInvoice,
+    address_to_beneficiary, extract_seal, generate_invoice, get_recipient_address, parse_invoice,
+    GeneratedInvoice, InvoiceRequest, ParsedInvoice,
 };
 
 // Re-export commonly used RGB types

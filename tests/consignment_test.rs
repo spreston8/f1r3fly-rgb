@@ -22,7 +22,6 @@ use commit_verify::{Digest, DigestExt, Sha256};
 use f1r3fly_rgb::{
     create_tapret_anchor, F1r3flyConsignment, F1r3flyExecutor, F1r3flyRgbContract, StrictVal,
 };
-use rgb::Opid;
 use rgb::Pile;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -102,9 +101,9 @@ async fn test_consignment_happy_path_with_validation() {
         .await
         .expect("Issue failed");
 
-    // Step 3: Use state_hash from execution result as Opid (this is how consignment identifies operations)
-    let opid = Opid::from(issue_result.state_hash);
-    contract.tracker_mut().add_seals(opid, seals.clone());
+    // Step 3: Use opid from execution result (not derived from state_hash)
+    // Note: contract.call_method already added seals to tracker, no need to add again
+    let opid = issue_result.opid;
 
     // Step 4: Create Tapret anchor with cryptographic proof
     let (anchor, witness_tx) = create_tapret_anchor(issue_result.state_hash)
@@ -125,8 +124,9 @@ async fn test_consignment_happy_path_with_validation() {
 
     // Step 6: Create consignment with real Bitcoin TX
     let witness_txs = vec![witness_tx.clone()];
-    let consignment = F1r3flyConsignment::new(&contract, issue_result, seals.clone(), witness_txs, false)
-        .expect("Failed to create consignment");
+    let consignment =
+        F1r3flyConsignment::new(&contract, issue_result, seals.clone(), witness_txs, false)
+            .expect("Failed to create consignment");
 
     // Step 7: Verify consignment structure
     assert_eq!(consignment.version, 1, "Version should be 1");
@@ -218,8 +218,8 @@ async fn test_consignment_fails_without_witness_transaction() {
         .await
         .expect("Issue failed");
 
-    // Step 3: Use state_hash from execution result as Opid
-    let opid = Opid::from(issue_result.state_hash);
+    // Step 3: Use opid from execution result (not derived from state_hash)
+    let opid = issue_result.opid;
 
     // Add dummy anchor (for testing failure path)
     let anchor = create_dummy_anchor();
@@ -228,8 +228,13 @@ async fn test_consignment_fails_without_witness_transaction() {
     // Step 4: Try to create consignment WITHOUT witness transaction
     let empty_witness_txs = vec![]; // Empty!
 
-    let consignment_result =
-        F1r3flyConsignment::new(&contract, issue_result, seals.clone(), empty_witness_txs, false);
+    let consignment_result = F1r3flyConsignment::new(
+        &contract,
+        issue_result,
+        seals.clone(),
+        empty_witness_txs,
+        false,
+    );
 
     // Should succeed creation (witness is optional at creation time)
     assert!(

@@ -568,8 +568,19 @@ impl F1r3flyExecutor {
 
         log::debug!("   Generated Rholang:\n{}", call_rholang);
 
+        // Generate deterministic opid from operation inputs
+        // Hash: contract_id + method + params to create unique operation ID
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(contract_id.as_slice());
+        hasher.update(method.as_bytes());
+        hasher.update(param_list.as_bytes());
+        let opid_bytes: [u8; 32] = hasher.finalize().into();
+        let opid = Opid::from(opid_bytes);
+
+        log::debug!("   Generated opid: {}", opid);
+
         // Execute
-        let opid = Opid::from([1u8; 32]); // Temp placeholder
         self.execute(call_rholang, opid).await
     }
 

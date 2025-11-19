@@ -427,7 +427,7 @@ pub fn get_recipient_address(
 /// Returns error if:
 /// - Script bytes conversion fails
 /// - Address payload extraction fails
-fn address_to_beneficiary(
+pub fn address_to_beneficiary(
     address: &bitcoin::Address,
     nonce: u64,
 ) -> Result<RgbBeneficiary, F1r3flyRgbError> {

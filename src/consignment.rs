@@ -146,8 +146,9 @@ impl F1r3flyConsignment {
             .map_err(|e| F1r3flyRgbError::InvalidResponse(format!("Invalid deploy ID: {}", e)))?;
 
         // Get anchor from contract tracker (or create placeholder for genesis)
-        let opid_bytes: [u8; 32] = result.state_hash;
-        let opid = rgb::Opid::from(opid_bytes);
+        // Use the opid from the execution result (not derived from state_hash)
+        // The opid is for RGB operation tracking, state_hash is for Bitcoin commitment
+        let opid = result.opid;
 
         let bitcoin_anchor = if is_genesis {
             // Genesis doesn't need real anchor - use placeholder
@@ -165,7 +166,7 @@ impl F1r3flyConsignment {
                         "No anchor found for operation {}. \
                          Wallet must call tracker.add_anchor() after PSBT finalization \
                          before creating consignment.",
-                        hex::encode(opid_bytes)
+                        opid
                     ))
                 })?
         };
