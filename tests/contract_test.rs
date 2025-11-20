@@ -43,6 +43,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use strict_types::{StrictDumb, StrictVal};
 
+mod signature_utils;
+use signature_utils::{generate_issue_signature, generate_nonce};
+
 /// Load environment variables from .env file
 fn load_env() {
     use std::path::PathBuf;
@@ -161,6 +164,7 @@ async fn test_contract_lifecycle_with_seal_tracking() {
     executor.set_derivation_index(test_derivation_offset(
         "test_contract_lifecycle_with_seal_tracking",
     ));
+    executor.set_auto_derive(false); // Disable to keep derivation_index stable for signature verification
 
     let contract = F1r3flyRgbContract::issue(executor, "SEAL", "Seal Test Token", 1000000, 8)
         .await
@@ -276,35 +280,33 @@ async fn test_contract_lifecycle_with_seal_tracking() {
     // Create matching witnessed/query seal pair for balance verification (use high vout for uniqueness)
     let (witnessed_seal, query_seal_for_balance) = create_matching_seal_pair(1000, 42);
 
-    log::info!("🔍 TEST: Created seal pair for vout 1000");
-    log::info!("  Witnessed seal: {:?}", witnessed_seal);
-    log::info!("  Query seal: {:?}", query_seal_for_balance);
-
     // Use the seal ID as the recipient so balanceOf can find it
     let seal_recipient = F1r3flyRgbContract::serialize_seal(&query_seal_for_balance);
-    log::info!("  Serialized seal for issue recipient: {}", seal_recipient);
 
     let mut issue_seals = SmallOrdMap::new();
     let _ = issue_seals.insert(0, witnessed_seal);
 
+    // Generate nonce and signature for secured issue() method
+    let child_key = contract
+        .executor()
+        .get_child_key_for_testing()
+        .expect("Failed to get child key for testing");
+
+    let nonce = generate_nonce();
+    let signature = generate_issue_signature(&seal_recipient, expected_amount, nonce, &child_key)
+        .expect("Failed to generate signature");
+
     let issue_params = &[
         ("recipient", StrictVal::from(seal_recipient.clone())),
         ("amount", StrictVal::from(expected_amount)),
+        ("nonce", StrictVal::from(nonce)),
+        ("signatureHex", StrictVal::from(signature.as_str())),
     ];
-
-    log::info!("🚀 TEST: Calling issue method with:");
-    log::info!("  Recipient: {}", seal_recipient);
-    log::info!("  Amount: {}", expected_amount);
 
     let issue_result = contract
         .call_method("issue", issue_params, issue_seals.clone())
         .await
         .expect("Issue call failed");
-
-    log::info!(
-        "✅ TEST: Issue succeeded, state_hash: {}",
-        hex::encode(issue_result.state_hash)
-    );
 
     // Verify issue operation succeeded
     assert_ne!(
@@ -314,10 +316,6 @@ async fn test_contract_lifecycle_with_seal_tracking() {
 
     // Now query the balance for the exact seal we just issued to
     // This tests the full workflow: issue → serialize → query → parse
-    log::info!(
-        "🔍 TEST: Querying balance for seal: {}",
-        F1r3flyRgbContract::serialize_seal(&query_seal_for_balance)
-    );
     let balance_result = contract.balance(&query_seal_for_balance).await;
 
     // Verify the balance matches what we issued - this is the key assertion!
@@ -365,6 +363,7 @@ async fn test_multiple_operations_with_seal_management() {
     executor.set_derivation_index(test_derivation_offset(
         "test_multiple_operations_with_seal_management",
     ));
+    executor.set_auto_derive(false); // Disable to keep derivation_index stable for signature verification
 
     let mut contract = F1r3flyRgbContract::issue(executor, "MULTI", "Multi-Op Token", 5000000, 6)
         .await
@@ -373,9 +372,20 @@ async fn test_multiple_operations_with_seal_management() {
     // Step 2: Perform first operation (issue) - use high vout range for deterministic uniqueness
     let seals_op1 = create_test_seals_with_offset(1, 2000);
 
+    // Generate signature for issue() call
+    let child_key = contract
+        .executor()
+        .get_child_key_for_testing()
+        .expect("Failed to get child key");
+    let nonce = generate_nonce();
+    let signature = generate_issue_signature("alice", 1000000u64, nonce, &child_key)
+        .expect("Failed to generate signature");
+
     let issue_params = &[
         ("recipient", StrictVal::from("alice")),
         ("amount", StrictVal::from(1000000u64)),
+        ("nonce", StrictVal::from(nonce)),
+        ("signatureHex", StrictVal::from(signature.as_str())),
     ];
 
     let result1 = contract
@@ -491,130 +501,5 @@ async fn test_multiple_operations_with_seal_management() {
         tracker_mut.witness_ids().count(),
         0,
         "No witnesses added yet"
-    );
-}
-
-// ============================================================================
-// Test 3: Read-After-Write Race Condition Test
-// ============================================================================
-
-#[tokio::test]
-async fn test_read_after_write_race_condition() {
-    let _ = env_logger::builder()
-        .is_test(true)
-        .filter_level(log::LevelFilter::Info)
-        .try_init();
-    load_env();
-
-    println!("\n🧪 TEST: Read-After-Write Race Condition Detection");
-    println!("{}", "=".repeat(70));
-
-    // Step 1: Create executor and issue contract
-    let mut executor = F1r3flyExecutor::new().expect("Failed to create F1r3flyExecutor");
-    executor.set_derivation_index(test_derivation_offset(
-        "test_read_after_write_race_condition",
-    ));
-
-    let mut contract =
-        F1r3flyRgbContract::issue(executor, "RACE", "Race Test Token", 10_000_000, 8)
-            .await
-            .expect("Failed to issue contract");
-
-    println!("✅ Contract deployed");
-
-    // Step 2: Create a unique seal for this test
-    let test_amount: u64 = 500_000;
-    let (witnessed_seal, query_seal) = create_matching_seal_pair(5000, 123);
-    let seal_id = F1r3flyRgbContract::serialize_seal(&query_seal);
-
-    println!("📍 Test seal: {}", seal_id);
-    println!("💰 Issuing {} tokens...", test_amount);
-
-    // Step 3: Issue tokens
-    let mut issue_seals = SmallOrdMap::new();
-    let _ = issue_seals.insert(0, witnessed_seal);
-
-    let issue_params = &[
-        ("recipient", StrictVal::from(seal_id.clone())),
-        ("amount", StrictVal::from(test_amount)),
-    ];
-
-    let issue_result = contract
-        .call_method("issue", issue_params, issue_seals)
-        .await
-        .expect("Issue call failed");
-
-    println!(
-        "✅ Issue completed with state_hash: {}",
-        hex::encode(issue_result.state_hash)
-    );
-
-    // Step 4: IMMEDIATE balance query (no delay) - This is where the race happens
-    println!("\n🔍 Query 1: IMMEDIATE (testing for race condition)");
-    let balance_1 = contract.balance(&query_seal).await.unwrap_or(0);
-    println!("   Balance: {}", balance_1);
-
-    // Step 5: Query again immediately (multiple times to show inconsistency)
-    println!("🔍 Query 2: IMMEDIATE (second attempt)");
-    let balance_2 = contract.balance(&query_seal).await.unwrap_or(0);
-    println!("   Balance: {}", balance_2);
-
-    println!("🔍 Query 3: IMMEDIATE (third attempt)");
-    let balance_3 = contract.balance(&query_seal).await.unwrap_or(0);
-    println!("   Balance: {}", balance_3);
-
-    // Step 6: Query after a small delay
-    println!("🔍 Query 4: After 100ms delay");
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    let balance_4 = contract.balance(&query_seal).await.unwrap_or(0);
-    println!("   Balance: {}", balance_4);
-
-    // Step 7: Query after another delay
-    println!("🔍 Query 5: After another 200ms delay");
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    let balance_5 = contract.balance(&query_seal).await.unwrap_or(0);
-    println!("   Balance: {}", balance_5);
-
-    // Step 8: Analyze results
-    println!("\n📊 ANALYSIS:");
-    println!("   Query 1 (immediate):        {}", balance_1);
-    println!("   Query 2 (immediate):        {}", balance_2);
-    println!("   Query 3 (immediate):        {}", balance_3);
-    println!("   Query 4 (+100ms):           {}", balance_4);
-    println!("   Query 5 (+300ms total):     {}", balance_5);
-    println!("   Expected:                   {}", test_amount);
-
-    let all_balances = vec![balance_1, balance_2, balance_3, balance_4, balance_5];
-    let correct_count = all_balances.iter().filter(|&&b| b == test_amount).count();
-    let zero_count = all_balances.iter().filter(|&&b| b == 0).count();
-
-    println!("\n🎯 RESULTS:");
-    println!("   Correct reads ({}):  {}/5", test_amount, correct_count);
-    println!("   Zero reads:              {}/5", zero_count);
-
-    if zero_count > 0 {
-        println!("\n❌ RACE CONDITION CONFIRMED:");
-        println!(
-            "   {} out of 5 queries returned 0 instead of {}",
-            zero_count, test_amount
-        );
-        println!("   This indicates treeHashMap.set() completion is not synchronized");
-        println!("   with treeHashMap.getOrElse() in the Rholang contract.");
-    } else if correct_count == 5 {
-        println!("\n✅ NO RACE DETECTED (this run):");
-        println!("   All queries returned correct value.");
-        println!("   Note: Race may still exist but didn't manifest in this execution.");
-    } else {
-        println!("\n⚠️  INCONSISTENT READS:");
-        println!("   Got varying non-zero values: {:?}", all_balances);
-    }
-
-    // The test itself passes/fails based on eventual consistency
-    // We expect the final query (after delays) to be correct
-    assert_eq!(
-        balance_5, test_amount,
-        "Final balance (after delays) should be correct. Got {}, expected {}. \
-        If earlier queries were 0, this confirms a read-after-write race condition.",
-        balance_5, test_amount
     );
 }

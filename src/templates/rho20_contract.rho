@@ -10,6 +10,7 @@
 // Template variables (replaced by executor.rs):
 // - {{TICKER}}, {{NAME}}, {{TOTAL_SUPPLY}}, {{PRECISION}}
 // - {{PUBLIC_KEY}}, {{SIGNATURE}}, {{VERSION}}, {{URI}}
+// - {{DEPLOYER_PUBLIC_KEY}} (NEW: for issue() authorization)
 
 new rl(`rho:registry:lookup`),
     rs(`rho:registry:insertSigned:secp256k1`),
@@ -21,7 +22,11 @@ new rl(`rho:registry:lookup`),
     prevEnvCh,
     initEnv,
     Rho20Token,
-    uriOut
+    uriOut,
+    secpVerify(`rho:crypto:secp256k1Verify`),
+    blake2b256(`rho:crypto:blake2b256Hash`),
+    deployerPubKeyCh,
+    usedNoncesCh
 in {
   // Check if contract already exists (Embers upgrade pattern)
   rl!(`{{URI}}`, *prevEnvCh) |
@@ -50,6 +55,14 @@ in {
         
         // Store treeHashMap and map for persistent access (uses <<- peek)
         balanceMapCh!(*treeHashMap, balanceMap) |
+        
+              // Store deployer public key (from wallet's f1r3fly_public_key)
+              // This is the ONLY key authorized to call issue()
+              deployerPubKeyCh!("{{DEPLOYER_PUBLIC_KEY}}".hexToBytes()) |
+              
+              // Track used nonces for replay protection (starts as empty Set)
+              // Must explicitly use Set() - {} is interpreted as Map!
+              usedNoncesCh!(Set()) |
         
         // =====================================================================
         // Method: getMetadata - Returns token metadata
@@ -85,44 +98,94 @@ in {
         // =====================================================================
         // Method: issue - Allocate tokens from unallocated supply
         // =====================================================================
-        // FIXED: Store unallocated in treeHashMap, not separate channel
-        contract Rho20Token(@"issue", @recipient, @amount, ret) = {
+        // SECURED: Requires deployer signature + nonce for authorization
+        //
+        // Parameters:
+        //   - recipient: UTXO identifier for token allocation
+        //   - amount: Number of tokens to issue
+        //   - nonce: Unique nonce for replay protection (must not have been used before)
+        //   - signatureHex: Hex-encoded signature of (recipient, amount, nonce)
+        //
+        // Authorization:
+        //   - Message: (recipient, amount, nonce) serialized to bytes
+        //   - Hash: Blake2b-256 of message
+        //   - Signature: ECDSA signature with secp256k1
+        //   - Signer: Must match deployer public key stored at contract deployment
+        //
+        // Returns:
+        //   - {"success": true, "balance": <amount>} on success
+        //   - {"success": false, "error": <reason>} on failure
+        contract Rho20Token(@"issue", @recipient, @amount, @nonce, @signatureHex, ret) = {
           if (amount <= 0) {
             ret!({"success": false, "error": "Amount must be positive"})
           } else {
-            new unallocFoundCh, unallocNotFoundCh in {
-              for(treeHashMap, @currentMap <<- balanceMapCh) {
-                // Get current unallocated from map (stored with key "unallocated")
-                treeHashMap!("getOrElse", currentMap, "unallocated", *unallocFoundCh, *unallocNotFoundCh) |
+            new hashCh, verifyCh in {
+              // Step 1: Hash the message (recipient, amount, nonce)
+              // This must match the Rust signing code exactly
+              blake2b256!((recipient, amount, nonce).toByteArray(), *hashCh) |
+              
+              // Step 2: Get deployer public key (peek - doesn't consume)
+              for (@messageHash <- hashCh; @deployerPubKey <<- deployerPubKeyCh) {
+                // Step 3: Verify signature
+                // secpVerify expects: (hash, signature, publicKey, returnChannel)
+                secpVerify!(messageHash, signatureHex.hexToBytes(), deployerPubKey, *verifyCh) |
                 
-                for(@currentUnallocated <- unallocFoundCh) {
-                  if (amount <= currentUnallocated) {
-                    // Update unallocated in map
-                    treeHashMap!("set", currentMap, "unallocated", currentUnallocated - amount, *devNull) |
-                    
-                    // Update recipient balance
-                    new balFoundCh, balNotFoundCh in {
-                      treeHashMap!("getOrElse", currentMap, recipient, *balFoundCh, *balNotFoundCh) |
-                      
-                      for(@existingBalance <- balFoundCh) {
-                        // Add to existing balance
-                        treeHashMap!("set", currentMap, recipient, existingBalance + amount, *devNull) |
-                        ret!({"success": true, "balance": existingBalance + amount})
-                      } |
-                      
-                      for(<- balNotFoundCh) {
-                        // Create new balance entry
-                        treeHashMap!("set", currentMap, recipient, amount, *devNull) |
-                        ret!({"success": true, "balance": amount})
+                for (@isValid <- verifyCh) {
+                  if (isValid) {
+                    // Signature is valid - check nonce hasn't been used
+                    for (@usedNonces <- usedNoncesCh) {
+                      if (usedNonces.contains(nonce)) {
+                        // Nonce was already used - reject (replay attack)
+                        usedNoncesCh!(usedNonces) |  // Put nonces back
+                        ret!({"success": false, "error": "Nonce already used"})
+                      } else {
+                        // Nonce is fresh - mark as used and proceed
+                        // Use Set.union() to add new nonce to set
+                        usedNoncesCh!(usedNonces.union(Set(nonce))) |
+                        
+                        // Execute issue logic (same as before)
+                        new unallocFoundCh, unallocNotFoundCh in {
+                          for(treeHashMap, @currentMap <<- balanceMapCh) {
+                            // Get current unallocated from map
+                            treeHashMap!("getOrElse", currentMap, "unallocated", *unallocFoundCh, *unallocNotFoundCh) |
+                            
+                            for(@currentUnallocated <- unallocFoundCh) {
+                              if (amount <= currentUnallocated) {
+                                // Update unallocated in map
+                                treeHashMap!("set", currentMap, "unallocated", currentUnallocated - amount, *devNull) |
+                                
+                                // Update recipient balance
+                                new balFoundCh, balNotFoundCh in {
+                                  treeHashMap!("getOrElse", currentMap, recipient, *balFoundCh, *balNotFoundCh) |
+                                  
+                                  for(@existingBalance <- balFoundCh) {
+                                    // Add to existing balance
+                                    treeHashMap!("set", currentMap, recipient, existingBalance + amount, *devNull) |
+                                    ret!({"success": true, "balance": existingBalance + amount})
+                                  } |
+                                  
+                                  for(<- balNotFoundCh) {
+                                    // Create new balance entry
+                                    treeHashMap!("set", currentMap, recipient, amount, *devNull) |
+                                    ret!({"success": true, "balance": amount})
+                                  }
+                                }
+                              } else {
+                                ret!({"success": false, "error": "Insufficient unallocated supply", "available": currentUnallocated, "requested": amount})
+                              }
+                            } |
+                            
+                            for(<- unallocNotFoundCh) {
+                              ret!({"success": false, "error": "Contract not initialized - unallocated supply not found"})
+                            }
+                          }
+                        }
                       }
                     }
                   } else {
-                    ret!({"success": false, "error": "Insufficient unallocated supply", "available": currentUnallocated, "requested": amount})
+                    // Signature verification failed
+                    ret!({"success": false, "error": "Invalid signature - unauthorized"})
                   }
-                } |
-                
-                for(<- unallocNotFoundCh) {
-                  ret!({"success": false, "error": "Contract not initialized - unallocated supply not found"})
                 }
               }
             }

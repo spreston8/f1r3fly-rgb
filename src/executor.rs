@@ -841,6 +841,21 @@ impl F1r3flyExecutor {
 
         Ok(expr.clone())
     }
+
+    /// Get current child key for test signature generation
+    ///
+    /// **For testing only** - Exposes the child private key used for contract deployment
+    /// so tests can generate valid signatures for the secured issue() method.
+    ///
+    /// # Security
+    /// This method is intended for integration tests only. In production, signatures
+    /// should be generated at the wallet layer with proper key management.
+    ///
+    /// # Returns
+    /// The child private key corresponding to the current derivation index
+    pub fn get_child_key_for_testing(&self) -> Result<SecretKey, F1r3flyRgbError> {
+        derive_child_key_from_master(&self.connection.config().signing_key, self.derivation_index)
+    }
 }
 
 // ============================================================================
@@ -966,6 +981,11 @@ fn substitute_template_variables(
     // Use CHILD public key for registry URI (ensures unique URI per contract)
     let child_pubkey_hex = hex::encode(child_public_key.serialize_uncompressed());
 
+    // Deployer public key is the CHILD public key (uncompressed secp256k1, 65 bytes)
+    // This key will be stored in the contract and used to verify issue() signatures
+    // The wallet's f1r3fly_private_key (which matches this public key) will sign issue calls
+    let deployer_pubkey_hex = child_pubkey_hex.clone();
+
     // Compute deterministic URI from CHILD public key
     let uri = public_key_to_uri(&child_public_key);
 
@@ -978,7 +998,8 @@ fn substitute_template_variables(
         .replace("{{PUBLIC_KEY}}", &child_pubkey_hex)
         .replace("{{VERSION}}", &version.to_string())
         .replace("{{SIGNATURE}}", &signature_hex)
-        .replace("{{URI}}", &uri);
+        .replace("{{URI}}", &uri)
+        .replace("{{DEPLOYER_PUBLIC_KEY}}", &deployer_pubkey_hex);
 
     // Return both the Rholang code AND the timestamp for deploy_with_timestamp
     Ok((rholang, timestamp_millis))

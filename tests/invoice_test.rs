@@ -129,9 +129,6 @@ fn test_generate_invoice_with_witness_out() {
         "Address should match input"
     );
     assert_eq!(invoice.amount, amount, "Amount should match input");
-
-    println!("✓ Generated invoice: {}", invoice_str);
-    println!("✓ Seal: {:?}", invoice.seal);
 }
 
 /// Test 2: Verify that parsing a generated invoice correctly extracts all data
@@ -155,7 +152,6 @@ fn test_parse_invoice_round_trip() {
 
     // Act - Convert to string and parse back
     let invoice_str = generated.invoice.to_string();
-    println!("Invoice string: {}", invoice_str);
 
     let parsed = parse_invoice(&invoice_str).expect("Invoice parsing should succeed");
 
@@ -167,9 +163,7 @@ fn test_parse_invoice_round_trip() {
 
     // Validate beneficiary type
     match &parsed.beneficiary {
-        RgbBeneficiary::WitnessOut(_) => {
-            println!("✓ Beneficiary is WitnessOut (correct)");
-        }
+        RgbBeneficiary::WitnessOut(_) => {}
         RgbBeneficiary::Token(_) => {
             panic!("Beneficiary should be WitnessOut, not AuthToken");
         }
@@ -177,8 +171,6 @@ fn test_parse_invoice_round_trip() {
 
     // Note: Amount extraction from StrictVal may return None if parsing isn't complete
     // This is acceptable for Phase 3 - main validation is contract_id and beneficiary
-    println!("✓ Parsed amount: {:?}", parsed.amount);
-    println!("✓ Round-trip successful");
 }
 
 /// Test 3: Validate seal extraction produces correct WTxoSeal structure
@@ -199,7 +191,6 @@ fn test_extract_seal_from_invoice() {
 
     // Assert - Validate seal structure
     let seal_debug = format!("{:?}", seal);
-    println!("Extracted seal: {}", seal_debug);
 
     // Verify seal contains expected components
     assert!(
@@ -219,9 +210,6 @@ fn test_extract_seal_from_invoice() {
         seal_debug, seal2_debug,
         "Seal extraction should be deterministic"
     );
-
-    println!("✓ Seal structure is correct");
-    println!("✓ Seal extraction is deterministic");
 }
 
 /// Test 4: Verify address extraction works for all address types
@@ -234,8 +222,6 @@ fn test_get_recipient_address_extraction() {
     ];
 
     for (addr_type, address) in test_cases {
-        println!("\nTesting {} address: {}", addr_type, address);
-
         // Arrange - Generate invoice with this address
         let contract_id = test_contract_id(&format!("test_contract_{}", addr_type));
         let generated = generate_invoice(
@@ -270,21 +256,14 @@ fn test_get_recipient_address_extraction() {
             "{} address should have regtest prefix 'bcrt1'",
             addr_type
         );
-
-        println!("✓ {} address extraction successful", addr_type);
     }
-
-    println!("\n✓ All address types validated successfully");
 }
 
 /// Test 5: Validate proper error handling for invalid inputs
 #[test]
 fn test_invoice_error_cases() {
-    println!("\n=== Testing Error Cases ===\n");
-
     // Test Case 1: Zero amount rejection
     {
-        println!("Test 1: Zero amount should be rejected");
         let contract_id = test_contract_id("test_error_zero");
         let address = test_address_p2wpkh();
 
@@ -298,37 +277,24 @@ fn test_invoice_error_cases() {
             "Error should mention zero amount, got: {}",
             err_msg
         );
-        println!("✓ Zero amount correctly rejected: {}", err_msg);
     }
 
     // Test Case 2: Invalid invoice string parsing
     {
-        println!("\nTest 2: Invalid invoice string should fail gracefully");
         let result = parse_invoice("invalid_invoice_string");
 
         assert!(result.is_err(), "Invalid invoice should return error");
-        println!(
-            "✓ Invalid invoice correctly rejected: {}",
-            result.unwrap_err()
-        );
     }
 
     // Test Case 3: Invalid prefix
     {
-        println!("\nTest 3: Invalid prefix should be rejected");
         let result = parse_invoice("notrgb:some_data_here");
 
         assert!(result.is_err(), "Invalid prefix should return error");
-        println!(
-            "✓ Invalid prefix correctly rejected: {}",
-            result.unwrap_err()
-        );
     }
 
     // Test Case 4: AuthToken not supported (extract_seal)
     {
-        println!("\nTest 4: AuthToken beneficiary should be rejected in extract_seal");
-
         // Create an AuthToken beneficiary manually
         let auth_token = AuthToken::strict_dumb();
         let token_beneficiary = RgbBeneficiary::Token(auth_token);
@@ -343,16 +309,10 @@ fn test_invoice_error_cases() {
             "Error should mention AuthToken, got: {}",
             err_msg
         );
-        println!(
-            "✓ AuthToken correctly rejected in extract_seal: {}",
-            err_msg
-        );
     }
 
     // Test Case 5: AuthToken not supported (get_recipient_address)
     {
-        println!("\nTest 5: AuthToken beneficiary should be rejected in get_recipient_address");
-
         let auth_token = AuthToken::strict_dumb();
         let token_beneficiary = RgbBeneficiary::Token(auth_token);
 
@@ -366,23 +326,12 @@ fn test_invoice_error_cases() {
             "Error should mention AuthToken or extraction failure, got: {}",
             err_msg
         );
-        println!(
-            "✓ AuthToken correctly rejected in get_recipient_address: {}",
-            err_msg
-        );
     }
 
     // Test Case 6: Malformed invoice (truncated)
     {
-        println!("\nTest 6: Malformed/truncated invoice should fail gracefully");
         let result = parse_invoice("rgb:abc");
 
         assert!(result.is_err(), "Malformed invoice should return error");
-        println!(
-            "✓ Malformed invoice correctly rejected: {}",
-            result.unwrap_err()
-        );
     }
-
-    println!("\n✓ All error cases handled correctly - no panics!");
 }

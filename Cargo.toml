@@ -45,3 +45,6 @@ dotenv = "0.15"
 env_logger = "0.11"
 anyhow = "1.0"  # For test error handling
 tempfile = "3.8"  # For test persistence
+f1r3fly-models = "0.1.0"  # For protobuf Par/Expr types in signature tests
+prost = "0.13.5"  # For protobuf encoding
+rand = "0.8"  # For nonce generation in tests

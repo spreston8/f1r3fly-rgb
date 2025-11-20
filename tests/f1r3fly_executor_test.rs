@@ -20,6 +20,9 @@ use f1r3fly_rgb::{ContractId, F1r3flyExecutor, RholangContractLibrary};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+mod signature_utils;
+use signature_utils::{generate_issue_signature, generate_nonce};
+
 /// Load environment variables from .env file and initialize logging
 fn load_env() {
     use std::path::PathBuf;
@@ -146,6 +149,7 @@ async fn test_executor_call_method() {
 
     let mut executor = F1r3flyExecutor::new().expect("Failed to create F1r3flyExecutor");
     executor.set_derivation_index(test_derivation_offset("test_executor_call_method"));
+    executor.set_auto_derive(false);
 
     let contract_id = deploy_test_contract(&mut executor).await;
 
@@ -155,6 +159,14 @@ async fn test_executor_call_method() {
     let initial_amount = 1000;
     let transfer_amount = 300;
 
+    // Generate signature for issue() call
+    let child_key = executor
+        .get_child_key_for_testing()
+        .expect("Failed to get child key");
+    let nonce = generate_nonce();
+    let signature = generate_issue_signature(alice, initial_amount, nonce, &child_key)
+        .expect("Failed to generate signature");
+
     executor
         .call_method(
             contract_id,
@@ -162,6 +174,8 @@ async fn test_executor_call_method() {
             &[
                 ("recipient", StrictVal::from(alice.to_string())),
                 ("amount", StrictVal::from(initial_amount)),
+                ("nonce", StrictVal::from(nonce)),
+                ("signatureHex", StrictVal::from(signature.as_str())),
             ],
         )
         .await
@@ -246,6 +260,7 @@ async fn test_executor_query_state() {
 
     let mut executor = F1r3flyExecutor::new().expect("Failed to create F1r3flyExecutor");
     executor.set_derivation_index(test_derivation_offset("test_executor_query_state"));
+    executor.set_auto_derive(false);
 
     let contract_id = deploy_test_contract(&mut executor).await;
 
@@ -253,9 +268,19 @@ async fn test_executor_query_state() {
     let alice = "alice_address";
     let issue_amount = 1000;
 
+    // Generate signature for issue() call
+    let child_key = executor
+        .get_child_key_for_testing()
+        .expect("Failed to get child key");
+    let nonce = generate_nonce();
+    let signature = generate_issue_signature(alice, issue_amount, nonce, &child_key)
+        .expect("Failed to generate signature");
+
     let issue_params = vec![
         ("recipient", StrictVal::from(alice.to_string())),
         ("amount", StrictVal::from(issue_amount)),
+        ("nonce", StrictVal::from(nonce)),
+        ("signatureHex", StrictVal::from(signature.as_str())),
     ];
 
     let issue_result = executor
@@ -401,6 +426,7 @@ async fn test_executor_multiple_method_calls() {
     executor.set_derivation_index(test_derivation_offset(
         "test_executor_multiple_method_calls",
     ));
+    executor.set_auto_derive(false);
 
     let contract_id = deploy_test_contract(&mut executor).await;
 
@@ -410,6 +436,15 @@ async fn test_executor_multiple_method_calls() {
 
     // Step 1: Issue tokens to alice
     let issue_amount = 5000;
+
+    // Generate signature for issue() call
+    let child_key = executor
+        .get_child_key_for_testing()
+        .expect("Failed to get child key");
+    let nonce = generate_nonce();
+    let signature = generate_issue_signature(alice, issue_amount, nonce, &child_key)
+        .expect("Failed to generate signature");
+
     let issue_result = executor
         .call_method(
             contract_id,
@@ -417,6 +452,8 @@ async fn test_executor_multiple_method_calls() {
             &[
                 ("recipient", StrictVal::from(alice.to_string())),
                 ("amount", StrictVal::from(issue_amount)),
+                ("nonce", StrictVal::from(nonce)),
+                ("signatureHex", StrictVal::from(signature.as_str())),
             ],
         )
         .await
@@ -537,6 +574,7 @@ async fn test_executor_query_after_method_call() {
     executor.set_derivation_index(test_derivation_offset(
         "test_executor_query_after_method_call",
     ));
+    executor.set_auto_derive(false);
 
     let contract_id = deploy_test_contract(&mut executor).await;
 
@@ -546,6 +584,14 @@ async fn test_executor_query_after_method_call() {
     let transfer_amount = 750;
 
     // Step 1: Issue tokens to alice
+    // Generate signature for issue() call
+    let child_key = executor
+        .get_child_key_for_testing()
+        .expect("Failed to get child key");
+    let nonce = generate_nonce();
+    let signature = generate_issue_signature(alice, initial_amount, nonce, &child_key)
+        .expect("Failed to generate signature");
+
     executor
         .call_method(
             contract_id,
@@ -553,6 +599,8 @@ async fn test_executor_query_after_method_call() {
             &[
                 ("recipient", StrictVal::from(alice.to_string())),
                 ("amount", StrictVal::from(initial_amount)),
+                ("nonce", StrictVal::from(nonce)),
+                ("signatureHex", StrictVal::from(signature.as_str())),
             ],
         )
         .await
@@ -680,9 +728,22 @@ async fn test_executor_caching_works() {
     );
 
     // Verify we can call methods on both cached contracts
+    let alice = "alice";
+    let amount = 1000u64;
+
+    // Generate signature for issue() call
+    let child_key = executor
+        .get_child_key_for_testing()
+        .expect("Failed to get child key");
+    let nonce = generate_nonce();
+    let signature = generate_issue_signature(alice, amount, nonce, &child_key)
+        .expect("Failed to generate signature");
+
     let params = &[
-        ("recipient", StrictVal::from("alice")),
-        ("amount", StrictVal::from(1000u64)),
+        ("recipient", StrictVal::from(alice)),
+        ("amount", StrictVal::from(amount)),
+        ("nonce", StrictVal::from(nonce)),
+        ("signatureHex", StrictVal::from(signature.as_str())),
     ];
 
     let result_1 = executor.call_method(contract_id_1, "issue", params).await;
