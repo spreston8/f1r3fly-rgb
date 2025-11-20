@@ -278,18 +278,10 @@ async fn test_executor_query_state() {
         ("signatureHex", StrictVal::from(signature.as_str())),
     ];
 
-    let issue_result = executor
+    let _issue_result = executor
         .call_method(contract_id, "issue", &issue_params)
         .await
         .expect("Issue failed");
-    println!(
-        "📊 DEBUG - Issue result deploy_id: {}",
-        hex::encode(&issue_result.deploy_id)
-    );
-    println!(
-        "📊 DEBUG - Issue result block: {}",
-        hex::encode(&issue_result.finalized_block_hash)
-    );
 
     // Step 2: Query balance for alice
     // Note: deploy_and_wait() ensures the deploy is finalized before returning
@@ -299,9 +291,6 @@ async fn test_executor_query_state() {
         .query_state(contract_id, "balanceOf", &balance_params)
         .await
         .expect("Query failed");
-
-    // DEBUG: Print the full response structure
-    println!("📊 DEBUG - Full balance response: {:#?}", balance);
 
     // Step 3: Verify exact balance
     assert!(

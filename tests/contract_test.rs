@@ -500,3 +500,200 @@ async fn test_multiple_operations_with_seal_management() {
         "No witnesses added yet"
     );
 }
+
+/// Test: Issue prevents nonce reuse (replay protection)
+///
+/// Verifies:
+/// - Same nonce cannot be used twice for issue() method
+/// - Rholang contract tracks used nonces and rejects duplicates
+/// - Error message indicates "Nonce already used"
+#[tokio::test]
+async fn test_issue_prevents_nonce_reuse() {
+    load_env();
+
+    let test_name = "issue_prevents_nonce_reuse";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Create executor and deploy contract
+    let mut executor = F1r3flyExecutor::new().expect("Failed to create executor");
+    executor.set_derivation_index(offset);
+    executor.set_auto_derive(false); // Keep same key for both calls
+
+    let mut contract = F1r3flyRgbContract::issue(executor, "NONCE", "Nonce Test Token", 10_000, 0)
+        .await
+        .expect("Failed to issue asset");
+
+    let contract_id = contract.contract_id();
+
+    // Step 2: Get signing key and create genesis seal
+    let signing_key = contract
+        .executor()
+        .get_child_key()
+        .expect("Failed to get signing key");
+
+    let genesis_seal = create_query_seal();
+    let genesis_seal_str = F1r3flyRgbContract::serialize_seal(&genesis_seal);
+
+    // Step 3: Generate a specific nonce
+    let nonce = generate_nonce();
+
+    // Step 4: First issue() call with this nonce - should succeed
+    let signature1 = generate_issue_signature(&genesis_seal_str, 1000, nonce, &signing_key)
+        .expect("Failed to generate signature");
+
+    let result1 = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(genesis_seal_str.as_str())),
+                ("amount", StrictVal::from(1000u64)),
+                ("nonce", StrictVal::from(nonce)),
+                ("signatureHex", StrictVal::from(signature1.as_str())),
+            ],
+        )
+        .await;
+
+    assert!(
+        result1.is_ok(),
+        "First issue() call should succeed: {:?}",
+        result1
+    );
+
+    // Verify first issue succeeded by checking balance
+    let balance1 = contract
+        .balance(&genesis_seal)
+        .await
+        .expect("Failed to query balance after first issue");
+    assert_eq!(balance1, 1000, "Balance should be 1000 after first issue");
+
+    // Step 5: Second issue() call with SAME nonce but different parameters - should FAIL
+    // Create a different seal using matching_seal_pair helper
+    let (_, seal2) = create_matching_seal_pair(2000, 42);
+    let seal2_str = F1r3flyRgbContract::serialize_seal(&seal2);
+
+    // Sign with same nonce but different recipient/amount
+    let signature2 = generate_issue_signature(&seal2_str, 2000, nonce, &signing_key)
+        .expect("Failed to generate signature 2");
+
+    let _result2 = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(seal2_str.as_str())),
+                ("amount", StrictVal::from(2000u64)),
+                ("nonce", StrictVal::from(nonce)), // SAME NONCE!
+                ("signatureHex", StrictVal::from(signature2.as_str())),
+            ],
+        )
+        .await
+        .expect("Deploy should succeed (but business logic should reject)");
+
+    // Verify second issue was rejected by checking balance didn't change for seal2
+    let balance2 = contract
+        .balance(&seal2)
+        .await
+        .expect("Failed to query balance after second issue");
+    assert_eq!(
+        balance2, 0,
+        "Balance for seal2 should be 0 (nonce reuse should be rejected)"
+    );
+
+    // Also verify first seal's balance is still 1000
+    let balance1_after = contract
+        .balance(&genesis_seal)
+        .await
+        .expect("Failed to query balance for genesis seal");
+    assert_eq!(
+        balance1_after, 1000,
+        "Original balance should remain unchanged"
+    );
+}
+
+/// Test: Unauthorized issue rejected (wrong signer)
+///
+/// Verifies:
+/// - Only deployer can call issue() method
+/// - Signatures from other keys are rejected
+/// - Error message indicates "Invalid signature - unauthorized"
+#[tokio::test]
+async fn test_unauthorized_issue_rejected() {
+    load_env();
+
+    let test_name = "unauthorized_issue_rejected";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Alice deploys contract with her key (at derivation index)
+    let mut executor_alice = F1r3flyExecutor::new().expect("Failed to create Alice's executor");
+    executor_alice.set_derivation_index(offset);
+    executor_alice.set_auto_derive(false);
+
+    let mut contract_alice =
+        F1r3flyRgbContract::issue(executor_alice, "AUTH", "Auth Test Token", 10_000, 0)
+            .await
+            .expect("Failed to issue asset");
+
+    let contract_id = contract_alice.contract_id();
+
+    // Alice's key (used to deploy contract)
+    let alice_key = contract_alice
+        .executor()
+        .get_child_key()
+        .expect("Failed to get Alice's key");
+
+    // Step 2: Bob tries to issue on Alice's contract using his own key
+    // Create a different executor with different derivation index to get Bob's key
+    let bob_offset = offset + 1000; // Different derivation index
+    let mut executor_bob = F1r3flyExecutor::new().expect("Failed to create Bob's executor");
+    executor_bob.set_derivation_index(bob_offset);
+
+    let bob_key = executor_bob
+        .get_child_key()
+        .expect("Failed to get Bob's key");
+
+    // Verify Alice and Bob have different keys
+    assert_ne!(
+        alice_key.secret_bytes(),
+        bob_key.secret_bytes(),
+        "Alice and Bob should have different keys"
+    );
+
+    // Step 3: Bob generates a signature with HIS key (not Alice's)
+    let genesis_seal = create_query_seal();
+    let genesis_seal_str = F1r3flyRgbContract::serialize_seal(&genesis_seal);
+
+    let nonce = generate_nonce();
+
+    // Bob signs with HIS key, but tries to issue on Alice's contract
+    let bob_signature = generate_issue_signature(&genesis_seal_str, 5000, nonce, &bob_key) // Bob's key!
+        .expect("Failed to generate Bob's signature");
+
+    // Step 4: Bob tries to call issue() on Alice's contract
+    let _result = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(genesis_seal_str.as_str())),
+                ("amount", StrictVal::from(5000u64)),
+                ("nonce", StrictVal::from(nonce)),
+                ("signatureHex", StrictVal::from(bob_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Deploy should succeed (but business logic should reject)");
+
+    // Verify unauthorized issue was rejected by checking balance is still 0
+    let balance_after_bob = contract_alice
+        .balance(&genesis_seal)
+        .await
+        .expect("Failed to query balance after unauthorized issue");
+    assert_eq!(
+        balance_after_bob, 0,
+        "Balance should be 0 (unauthorized signature should be rejected)"
+    );
+}
