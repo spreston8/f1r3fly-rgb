@@ -1181,7 +1181,6 @@ dependencies = [
  "log",
  "node_cli",
  "prost",
- "rand 0.8.5",
  "reqwest 0.11.27",
  "rgb-invoice",
  "rgb-std",

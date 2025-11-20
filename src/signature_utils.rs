@@ -114,14 +114,14 @@ pub fn generate_issue_signature(
 /// ```
 pub fn generate_nonce() -> u64 {
     use chrono::Utc;
-    use rand::RngCore;
+    use secp256k1::rand::RngCore;
 
     // Use timestamp in seconds (not milliseconds) to keep numbers smaller
     let timestamp_sec = Utc::now().timestamp() as u64;
 
     // Add small random component for uniqueness within same second
     let mut rng_bytes = [0u8; 2];
-    rand::rngs::OsRng.fill_bytes(&mut rng_bytes);
+    secp256k1::rand::rngs::OsRng.fill_bytes(&mut rng_bytes);
     let random = u16::from_le_bytes(rng_bytes) as u64;
 
     // Combine: timestamp * 100000 + random (keeps result < i64::MAX)

@@ -37,14 +37,11 @@
 use amplify::confinement::SmallOrdMap;
 use bp::seals::{TxoSeal, WTxoSeal};
 use commit_verify::{Digest, DigestExt, Sha256};
-use f1r3fly_rgb::{F1r3flyExecutor, F1r3flyRgbContract};
+use f1r3fly_rgb::{generate_issue_signature, generate_nonce, F1r3flyExecutor, F1r3flyRgbContract};
 use rgb::Pile;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use strict_types::{StrictDumb, StrictVal};
-
-mod signature_utils;
-use signature_utils::{generate_issue_signature, generate_nonce};
 
 /// Load environment variables from .env file
 fn load_env() {
@@ -289,7 +286,7 @@ async fn test_contract_lifecycle_with_seal_tracking() {
     // Generate nonce and signature for secured issue() method
     let child_key = contract
         .executor()
-        .get_child_key_for_testing()
+        .get_child_key()
         .expect("Failed to get child key for testing");
 
     let nonce = generate_nonce();
@@ -375,7 +372,7 @@ async fn test_multiple_operations_with_seal_management() {
     // Generate signature for issue() call
     let child_key = contract
         .executor()
-        .get_child_key_for_testing()
+        .get_child_key()
         .expect("Failed to get child key");
     let nonce = generate_nonce();
     let signature = generate_issue_signature("alice", 1000000u64, nonce, &child_key)

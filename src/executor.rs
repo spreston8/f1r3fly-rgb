@@ -847,14 +847,29 @@ impl F1r3flyExecutor {
     /// **For testing only** - Exposes the child private key used for contract deployment
     /// so tests can generate valid signatures for the secured issue() method.
     ///
-    /// # Security
-    /// This method is intended for integration tests only. In production, signatures
-    /// should be generated at the wallet layer with proper key management.
+    /// Get current child key for signature generation
+    ///
+    /// Returns the child key derived at the current derivation_index.
+    /// This is the key used for contract deployment and should be used
+    /// for signing secured method calls like issue().
     ///
     /// # Returns
     /// The child private key corresponding to the current derivation index
-    pub fn get_child_key_for_testing(&self) -> Result<SecretKey, F1r3flyRgbError> {
+    pub fn get_child_key(&self) -> Result<SecretKey, F1r3flyRgbError> {
         derive_child_key_from_master(&self.connection.config().signing_key, self.derivation_index)
+    }
+
+    /// Get child key at a specific derivation index
+    ///
+    /// Useful for retrieving signing keys for previously deployed contracts.
+    ///
+    /// # Arguments
+    /// * `index` - The derivation index to use
+    ///
+    /// # Returns
+    /// The child private key corresponding to the specified derivation index
+    pub fn get_child_key_at_index(&self, index: u32) -> Result<SecretKey, F1r3flyRgbError> {
+        derive_child_key_from_master(&self.connection.config().signing_key, index)
     }
 }
 

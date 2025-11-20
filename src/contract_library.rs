@@ -164,6 +164,7 @@ mod tests {
             ("TOTAL_SUPPLY", "21000000"),
             ("PRECISION", "8"),
             ("PUBLIC_KEY", "04abcd1234..."),
+            ("DEPLOYER_PUBLIC_KEY", "04efgh5678..."),
             ("SIGNATURE", "3045022100..."),
             ("URI", "rho:id:test123"),
             ("VERSION", "1"),

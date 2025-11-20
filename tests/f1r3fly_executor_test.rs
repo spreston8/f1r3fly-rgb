@@ -16,12 +16,11 @@
 //! Run with: cargo test --test f1r3fly_executor_test -- --nocapture
 
 use f1r3fly_rgb::StrictVal;
-use f1r3fly_rgb::{ContractId, F1r3flyExecutor, RholangContractLibrary};
+use f1r3fly_rgb::{
+    generate_issue_signature, generate_nonce, ContractId, F1r3flyExecutor, RholangContractLibrary,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-
-mod signature_utils;
-use signature_utils::{generate_issue_signature, generate_nonce};
 
 /// Load environment variables from .env file and initialize logging
 fn load_env() {
@@ -160,9 +159,7 @@ async fn test_executor_call_method() {
     let transfer_amount = 300;
 
     // Generate signature for issue() call
-    let child_key = executor
-        .get_child_key_for_testing()
-        .expect("Failed to get child key");
+    let child_key = executor.get_child_key().expect("Failed to get child key");
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, initial_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -269,9 +266,7 @@ async fn test_executor_query_state() {
     let issue_amount = 1000;
 
     // Generate signature for issue() call
-    let child_key = executor
-        .get_child_key_for_testing()
-        .expect("Failed to get child key");
+    let child_key = executor.get_child_key().expect("Failed to get child key");
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, issue_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -438,9 +433,7 @@ async fn test_executor_multiple_method_calls() {
     let issue_amount = 5000;
 
     // Generate signature for issue() call
-    let child_key = executor
-        .get_child_key_for_testing()
-        .expect("Failed to get child key");
+    let child_key = executor.get_child_key().expect("Failed to get child key");
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, issue_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -585,9 +578,7 @@ async fn test_executor_query_after_method_call() {
 
     // Step 1: Issue tokens to alice
     // Generate signature for issue() call
-    let child_key = executor
-        .get_child_key_for_testing()
-        .expect("Failed to get child key");
+    let child_key = executor.get_child_key().expect("Failed to get child key");
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, initial_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -732,9 +723,7 @@ async fn test_executor_caching_works() {
     let amount = 1000u64;
 
     // Generate signature for issue() call
-    let child_key = executor
-        .get_child_key_for_testing()
-        .expect("Failed to get child key");
+    let child_key = executor.get_child_key().expect("Failed to get child key");
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, amount, nonce, &child_key)
         .expect("Failed to generate signature");
