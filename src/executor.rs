@@ -871,6 +871,35 @@ impl F1r3flyExecutor {
     pub fn get_child_key_at_index(&self, index: u32) -> Result<SecretKey, F1r3flyRgbError> {
         derive_child_key_from_master(&self.connection.config().signing_key, index)
     }
+
+    /// Get public key for current derivation index
+    ///
+    /// Returns the public key corresponding to the current child key.
+    /// This is the key used for contract deployment and should be registered
+    /// as the owner during issue().
+    ///
+    /// # Returns
+    /// The public key corresponding to the current derivation index
+    pub fn get_public_key(&self) -> Result<PublicKey, F1r3flyRgbError> {
+        let child_key = self.get_child_key()?;
+        let secp = Secp256k1::new();
+        Ok(PublicKey::from_secret_key(&secp, &child_key))
+    }
+
+    /// Get public key at a specific derivation index
+    ///
+    /// Returns the public key for a previously deployed contract.
+    ///
+    /// # Arguments
+    /// * `index` - The derivation index to use
+    ///
+    /// # Returns
+    /// The public key corresponding to the specified derivation index
+    pub fn get_public_key_at_index(&self, index: u32) -> Result<PublicKey, F1r3flyRgbError> {
+        let child_key = self.get_child_key_at_index(index)?;
+        let secp = Secp256k1::new();
+        Ok(PublicKey::from_secret_key(&secp, &child_key))
+    }
 }
 
 // ============================================================================
