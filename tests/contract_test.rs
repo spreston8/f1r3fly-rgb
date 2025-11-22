@@ -35,7 +35,9 @@
 //! Run with: cargo test --test contract_test -- --nocapture
 
 use amplify::confinement::SmallOrdMap;
+use amplify::ByteArray;
 use bp::seals::{TxoSeal, WTxoSeal};
+use bp::Txid;
 use commit_verify::{Digest, DigestExt, Sha256};
 use f1r3fly_rgb::{generate_issue_signature, generate_nonce, F1r3flyExecutor, F1r3flyRgbContract};
 use rgb::Pile;
@@ -96,9 +98,6 @@ fn create_test_seals_with_offset(count: u16, vout_offset: u32) -> SmallOrdMap<u1
 ///
 /// Uses a deterministic txid and vout for testing
 fn create_query_seal() -> TxoSeal {
-    use amplify::ByteArray;
-    use bp::Txid;
-
     // Create deterministic txid for testing
     let txid_bytes = [0x11u8; 32];
     let txid = Txid::from_byte_array(txid_bytes);
@@ -119,10 +118,6 @@ fn create_query_seal() -> TxoSeal {
 ///
 /// Returns (witnessed_seal, query_seal) with the same underlying outpoint
 fn create_matching_seal_pair(vout: u32, nonce: u64) -> (WTxoSeal, TxoSeal) {
-    use amplify::ByteArray;
-    use bp::Txid;
-    use commit_verify::{Digest, DigestExt, Sha256};
-
     // Create deterministic txid and noise
     let txid_bytes = [0xAAu8; 32];
     let txid = Txid::from_byte_array(txid_bytes);
@@ -289,6 +284,11 @@ async fn test_contract_lifecycle_with_seal_tracking() {
         .get_child_key()
         .expect("Failed to get child key for testing");
 
+    // Derive public key from child key for owner registration
+    let secp = secp256k1::Secp256k1::new();
+    let child_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let recipient_pubkey_hex = hex::encode(child_public_key.serialize_uncompressed());
+
     let nonce = generate_nonce();
     let signature = generate_issue_signature(&seal_recipient, expected_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -296,6 +296,10 @@ async fn test_contract_lifecycle_with_seal_tracking() {
     let issue_params = &[
         ("recipient", StrictVal::from(seal_recipient.clone())),
         ("amount", StrictVal::from(expected_amount)),
+        (
+            "recipientPubKey",
+            StrictVal::from(recipient_pubkey_hex.as_str()),
+        ),
         ("nonce", StrictVal::from(nonce)),
         ("signatureHex", StrictVal::from(signature.as_str())),
     ];
@@ -374,6 +378,12 @@ async fn test_multiple_operations_with_seal_management() {
         .executor()
         .get_child_key()
         .expect("Failed to get child key");
+
+    // Derive public key from child key for owner registration
+    let secp = secp256k1::Secp256k1::new();
+    let child_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let recipient_pubkey_hex = hex::encode(child_public_key.serialize_uncompressed());
+
     let nonce = generate_nonce();
     let signature = generate_issue_signature("alice", 1000000u64, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -381,6 +391,10 @@ async fn test_multiple_operations_with_seal_management() {
     let issue_params = &[
         ("recipient", StrictVal::from("alice")),
         ("amount", StrictVal::from(1000000u64)),
+        (
+            "recipientPubKey",
+            StrictVal::from(recipient_pubkey_hex.as_str()),
+        ),
         ("nonce", StrictVal::from(nonce)),
         ("signatureHex", StrictVal::from(signature.as_str())),
     ];
@@ -392,13 +406,36 @@ async fn test_multiple_operations_with_seal_management() {
 
     let opid1 = result1.opid;
 
-    // Step 3: Perform second operation (transfer)
+    // Step 3: Perform second operation (transfer alice → bob)
     let seals_op2 = create_test_seals_with_offset(2, 2001);
+
+    // Generate Bob's key (different derivation index for different participant)
+    let mut executor_bob = F1r3flyExecutor::new().expect("Failed to create Bob's executor");
+    executor_bob.set_derivation_index(
+        test_derivation_offset("test_multiple_operations_with_seal_management") + 1,
+    );
+    let bob_key = executor_bob
+        .get_child_key()
+        .expect("Failed to get Bob's key");
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &bob_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
+    // Alice signs the transfer (she owns "alice" UTXO)
+    let transfer1_nonce = generate_nonce();
+    let transfer1_signature =
+        f1r3fly_rgb::generate_transfer_signature("alice", "bob", 250, transfer1_nonce, &child_key)
+            .expect("Failed to generate transfer signature");
 
     let transfer_params = &[
         ("from", StrictVal::from("alice")),
         ("to", StrictVal::from("bob")),
         ("amount", StrictVal::from(250u64)),
+        ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+        ("nonce", StrictVal::from(transfer1_nonce)),
+        (
+            "fromSignatureHex",
+            StrictVal::from(transfer1_signature.as_str()),
+        ),
     ];
 
     let result2 = contract
@@ -408,13 +445,41 @@ async fn test_multiple_operations_with_seal_management() {
 
     let opid2 = result2.opid;
 
-    // Step 4: Perform third operation (another transfer)
+    // Step 4: Perform third operation (transfer bob → charlie)
     let seals_op3 = create_test_seals_with_offset(3, 2003);
+
+    // Generate Charlie's key (different derivation index)
+    let mut executor_charlie = F1r3flyExecutor::new().expect("Failed to create Charlie's executor");
+    executor_charlie.set_derivation_index(
+        test_derivation_offset("test_multiple_operations_with_seal_management") + 2,
+    );
+    let charlie_key = executor_charlie
+        .get_child_key()
+        .expect("Failed to get Charlie's key");
+    let charlie_public_key = secp256k1::PublicKey::from_secret_key(&secp, &charlie_key);
+    let charlie_pubkey_hex = hex::encode(charlie_public_key.serialize_uncompressed());
+
+    // Bob signs the transfer (he now owns "bob" UTXO after previous transfer)
+    let transfer2_nonce = generate_nonce();
+    let transfer2_signature = f1r3fly_rgb::generate_transfer_signature(
+        "bob",
+        "charlie",
+        100,
+        transfer2_nonce,
+        &bob_key, // Bob's key signs
+    )
+    .expect("Failed to generate transfer signature");
 
     let transfer_params2 = &[
         ("from", StrictVal::from("bob")),
         ("to", StrictVal::from("charlie")),
         ("amount", StrictVal::from(100u64)),
+        ("toPubKey", StrictVal::from(charlie_pubkey_hex.as_str())),
+        ("nonce", StrictVal::from(transfer2_nonce)),
+        (
+            "fromSignatureHex",
+            StrictVal::from(transfer2_signature.as_str()),
+        ),
     ];
 
     let result3 = contract
@@ -538,6 +603,11 @@ async fn test_issue_prevents_nonce_reuse() {
     let nonce = generate_nonce();
 
     // Step 4: First issue() call with this nonce - should succeed
+    // Derive public key from signing key for owner registration
+    let secp = secp256k1::Secp256k1::new();
+    let signing_public_key = secp256k1::PublicKey::from_secret_key(&secp, &signing_key);
+    let recipient_pubkey_hex = hex::encode(signing_public_key.serialize_uncompressed());
+
     let signature1 = generate_issue_signature(&genesis_seal_str, 1000, nonce, &signing_key)
         .expect("Failed to generate signature");
 
@@ -549,6 +619,10 @@ async fn test_issue_prevents_nonce_reuse() {
             &[
                 ("recipient", StrictVal::from(genesis_seal_str.as_str())),
                 ("amount", StrictVal::from(1000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(recipient_pubkey_hex.as_str()),
+                ),
                 ("nonce", StrictVal::from(nonce)),
                 ("signatureHex", StrictVal::from(signature1.as_str())),
             ],
@@ -585,6 +659,10 @@ async fn test_issue_prevents_nonce_reuse() {
             &[
                 ("recipient", StrictVal::from(seal2_str.as_str())),
                 ("amount", StrictVal::from(2000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(recipient_pubkey_hex.as_str()),
+                ),
                 ("nonce", StrictVal::from(nonce)), // SAME NONCE!
                 ("signatureHex", StrictVal::from(signature2.as_str())),
             ],
@@ -668,6 +746,11 @@ async fn test_unauthorized_issue_rejected() {
     let nonce = generate_nonce();
 
     // Bob signs with HIS key, but tries to issue on Alice's contract
+    // Derive Bob's public key for the issue call
+    let secp = secp256k1::Secp256k1::new();
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &bob_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
     let bob_signature = generate_issue_signature(&genesis_seal_str, 5000, nonce, &bob_key) // Bob's key!
         .expect("Failed to generate Bob's signature");
 
@@ -680,6 +763,7 @@ async fn test_unauthorized_issue_rejected() {
             &[
                 ("recipient", StrictVal::from(genesis_seal_str.as_str())),
                 ("amount", StrictVal::from(5000u64)),
+                ("recipientPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
                 ("nonce", StrictVal::from(nonce)),
                 ("signatureHex", StrictVal::from(bob_signature.as_str())),
             ],
@@ -695,5 +779,601 @@ async fn test_unauthorized_issue_rejected() {
     assert_eq!(
         balance_after_bob, 0,
         "Balance should be 0 (unauthorized signature should be rejected)"
+    );
+}
+
+// ============================================================================
+// Phase 2 (Issue 2) Tests: Transfer Authorization
+// ============================================================================
+
+#[tokio::test]
+async fn test_transfer_requires_valid_signature() {
+    load_env();
+
+    let test_name = "transfer_requires_valid_signature";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Alice deploys contract and issues to herself
+    let mut executor_alice = F1r3flyExecutor::new().expect("Failed to create Alice's executor");
+    executor_alice.set_derivation_index(offset);
+    executor_alice.set_auto_derive(false);
+
+    let mut contract_alice =
+        F1r3flyRgbContract::issue(executor_alice, "XFER", "Transfer Test Token", 10_000, 0)
+            .await
+            .expect("Failed to issue asset");
+
+    let contract_id = contract_alice.contract_id();
+
+    // Get Alice's key and public key
+    let alice_key = contract_alice
+        .executor()
+        .get_child_key()
+        .expect("Failed to get Alice's key");
+    let secp = secp256k1::Secp256k1::new();
+    let alice_public_key = secp256k1::PublicKey::from_secret_key(&secp, &alice_key);
+    let alice_pubkey_hex = hex::encode(alice_public_key.serialize_uncompressed());
+
+    // Issue tokens to Alice's UTXO
+    let alice_seal = create_query_seal();
+    let alice_seal_str = F1r3flyRgbContract::serialize_seal(&alice_seal);
+
+    let issue_nonce = generate_nonce();
+    let issue_signature = generate_issue_signature(&alice_seal_str, 5000, issue_nonce, &alice_key)
+        .expect("Failed to generate issue signature");
+
+    let _issue_result = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(alice_seal_str.as_str())),
+                ("amount", StrictVal::from(5000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(alice_pubkey_hex.as_str()),
+                ),
+                ("nonce", StrictVal::from(issue_nonce)),
+                ("signatureHex", StrictVal::from(issue_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Issue should succeed");
+
+    // Verify Alice has balance
+    let alice_balance_before = contract_alice
+        .balance(&alice_seal)
+        .await
+        .expect("Failed to query Alice's balance");
+    assert_eq!(
+        alice_balance_before, 5000,
+        "Alice should have 5000 tokens after issue"
+    );
+
+    // Step 2: Create Bob's key and UTXO
+    let mut executor_bob = F1r3flyExecutor::new().expect("Failed to create Bob's executor");
+    executor_bob.set_derivation_index(offset + 1);
+    let bob_key = executor_bob
+        .get_child_key()
+        .expect("Failed to get Bob's key");
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &bob_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
+    // Create Bob's seal (deterministic for testing)
+    let bob_txid_bytes = [0x22u8; 32];
+    let bob_txid = Txid::from_byte_array(bob_txid_bytes);
+    let bob_outpoint = bp::Outpoint::new(bob_txid, 0u32);
+    use bp::seals::{Noise, TxoSealExt};
+    let bob_seal = TxoSeal {
+        primary: bob_outpoint,
+        secondary: TxoSealExt::Noise(Noise::strict_dumb()),
+    };
+    let bob_seal_str = F1r3flyRgbContract::serialize_seal(&bob_seal);
+
+    // Step 3: Alice transfers to Bob WITH valid signature
+    let transfer_nonce = generate_nonce();
+    let transfer_signature = f1r3fly_rgb::generate_transfer_signature(
+        &alice_seal_str,
+        &bob_seal_str,
+        1000,
+        transfer_nonce,
+        &alice_key, // Alice signs
+    )
+    .expect("Failed to generate transfer signature");
+
+    let _transfer_result = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(alice_seal_str.as_str())),
+                ("to", StrictVal::from(bob_seal_str.as_str())),
+                ("amount", StrictVal::from(1000u64)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(transfer_signature.as_str()),
+                ),
+            ],
+        )
+        .await
+        .expect("Transfer should succeed with valid signature");
+
+    // Step 4: Verify balances changed correctly
+    let alice_balance_after = contract_alice
+        .balance(&alice_seal)
+        .await
+        .expect("Failed to query Alice's balance after transfer");
+    assert_eq!(
+        alice_balance_after, 4000,
+        "Alice should have 4000 tokens after transfer"
+    );
+
+    let bob_balance_after = contract_alice
+        .balance(&bob_seal)
+        .await
+        .expect("Failed to query Bob's balance after transfer");
+    assert_eq!(
+        bob_balance_after, 1000,
+        "Bob should have 1000 tokens after transfer"
+    );
+}
+
+#[tokio::test]
+async fn test_transfer_rejects_invalid_signature() {
+    load_env();
+
+    let test_name = "transfer_rejects_invalid_signature";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Alice deploys contract and issues to herself
+    let mut executor_alice = F1r3flyExecutor::new().expect("Failed to create Alice's executor");
+    executor_alice.set_derivation_index(offset);
+    executor_alice.set_auto_derive(false);
+
+    let mut contract_alice = F1r3flyRgbContract::issue(
+        executor_alice,
+        "INVSIG",
+        "Invalid Signature Test",
+        10_000,
+        0,
+    )
+    .await
+    .expect("Failed to issue asset");
+
+    let contract_id = contract_alice.contract_id();
+
+    // Get Alice's key
+    let alice_key = contract_alice
+        .executor()
+        .get_child_key()
+        .expect("Failed to get Alice's key");
+    let secp = secp256k1::Secp256k1::new();
+    let alice_public_key = secp256k1::PublicKey::from_secret_key(&secp, &alice_key);
+    let alice_pubkey_hex = hex::encode(alice_public_key.serialize_uncompressed());
+
+    // Issue tokens to Alice
+    let alice_seal = create_query_seal();
+    let alice_seal_str = F1r3flyRgbContract::serialize_seal(&alice_seal);
+
+    let issue_nonce = generate_nonce();
+    let issue_signature = generate_issue_signature(&alice_seal_str, 5000, issue_nonce, &alice_key)
+        .expect("Failed to generate issue signature");
+
+    let _issue_result = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(alice_seal_str.as_str())),
+                ("amount", StrictVal::from(5000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(alice_pubkey_hex.as_str()),
+                ),
+                ("nonce", StrictVal::from(issue_nonce)),
+                ("signatureHex", StrictVal::from(issue_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Issue should succeed");
+
+    // Step 2: Create Bob's key and a WRONG key for signing
+    let mut executor_bob = F1r3flyExecutor::new().expect("Failed to create Bob's executor");
+    executor_bob.set_derivation_index(offset + 1);
+    let bob_key = executor_bob
+        .get_child_key()
+        .expect("Failed to get Bob's key");
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &bob_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
+    // Create Bob's seal (deterministic for testing)
+    let bob_txid_bytes = [0x22u8; 32];
+    let bob_txid = Txid::from_byte_array(bob_txid_bytes);
+    let bob_outpoint = bp::Outpoint::new(bob_txid, 0u32);
+    use bp::seals::{Noise, TxoSealExt};
+    let bob_seal = TxoSeal {
+        primary: bob_outpoint,
+        secondary: TxoSealExt::Noise(Noise::strict_dumb()),
+    };
+    let bob_seal_str = F1r3flyRgbContract::serialize_seal(&bob_seal);
+
+    // Create a WRONG key (different from Alice's)
+    let mut executor_wrong = F1r3flyExecutor::new().expect("Failed to create wrong executor");
+    executor_wrong.set_derivation_index(offset + 999);
+    let wrong_key = executor_wrong
+        .get_child_key()
+        .expect("Failed to get wrong key");
+
+    // Verify wrong key is different from Alice's
+    assert_ne!(
+        alice_key.secret_bytes(),
+        wrong_key.secret_bytes(),
+        "Wrong key should be different from Alice's key"
+    );
+
+    // Step 3: Try to transfer with WRONG signature (signed by wrong_key, not alice_key)
+    let transfer_nonce = generate_nonce();
+    let wrong_signature = f1r3fly_rgb::generate_transfer_signature(
+        &alice_seal_str,
+        &bob_seal_str,
+        1000,
+        transfer_nonce,
+        &wrong_key, // WRONG KEY!
+    )
+    .expect("Failed to generate wrong signature");
+
+    let _transfer_result = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(alice_seal_str.as_str())),
+                ("to", StrictVal::from(bob_seal_str.as_str())),
+                ("amount", StrictVal::from(1000u64)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(wrong_signature.as_str()),
+                ),
+            ],
+        )
+        .await
+        .expect("Deploy should succeed (but business logic should reject)");
+
+    // Step 4: Verify transfer was REJECTED - balances should be unchanged
+    let alice_balance_after = contract_alice
+        .balance(&alice_seal)
+        .await
+        .expect("Failed to query Alice's balance after failed transfer");
+    assert_eq!(
+        alice_balance_after, 5000,
+        "Alice should still have 5000 tokens (transfer rejected)"
+    );
+
+    let bob_balance_after = contract_alice
+        .balance(&bob_seal)
+        .await
+        .expect("Failed to query Bob's balance after failed transfer");
+    assert_eq!(
+        bob_balance_after, 0,
+        "Bob should have 0 tokens (transfer rejected)"
+    );
+}
+
+#[tokio::test]
+async fn test_transfer_rejects_unauthorized_sender() {
+    load_env();
+
+    let test_name = "transfer_rejects_unauthorized_sender";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Alice deploys contract and issues to herself
+    let mut executor_alice = F1r3flyExecutor::new().expect("Failed to create Alice's executor");
+    executor_alice.set_derivation_index(offset);
+    executor_alice.set_auto_derive(false);
+
+    let mut contract_alice = F1r3flyRgbContract::issue(
+        executor_alice,
+        "UNAUTH",
+        "Unauthorized Sender Test",
+        10_000,
+        0,
+    )
+    .await
+    .expect("Failed to issue asset");
+
+    let contract_id = contract_alice.contract_id();
+
+    // Get Alice's key
+    let alice_key = contract_alice
+        .executor()
+        .get_child_key()
+        .expect("Failed to get Alice's key");
+    let secp = secp256k1::Secp256k1::new();
+    let alice_public_key = secp256k1::PublicKey::from_secret_key(&secp, &alice_key);
+    let alice_pubkey_hex = hex::encode(alice_public_key.serialize_uncompressed());
+
+    // Issue tokens to Alice's UTXO
+    let alice_seal = create_query_seal();
+    let alice_seal_str = F1r3flyRgbContract::serialize_seal(&alice_seal);
+
+    let issue_nonce = generate_nonce();
+    let issue_signature = generate_issue_signature(&alice_seal_str, 5000, issue_nonce, &alice_key)
+        .expect("Failed to generate issue signature");
+
+    let _issue_result = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(alice_seal_str.as_str())),
+                ("amount", StrictVal::from(5000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(alice_pubkey_hex.as_str()),
+                ),
+                ("nonce", StrictVal::from(issue_nonce)),
+                ("signatureHex", StrictVal::from(issue_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Issue should succeed");
+
+    // Step 2: Attacker creates their own key and tries to steal Alice's tokens
+    let mut executor_attacker =
+        F1r3flyExecutor::new().expect("Failed to create attacker's executor");
+    executor_attacker.set_derivation_index(offset + 666);
+    let attacker_key = executor_attacker
+        .get_child_key()
+        .expect("Failed to get attacker's key");
+    let attacker_public_key = secp256k1::PublicKey::from_secret_key(&secp, &attacker_key);
+    let attacker_pubkey_hex = hex::encode(attacker_public_key.serialize_uncompressed());
+
+    // Create attacker's seal (deterministic for testing)
+    let attacker_txid_bytes = [0x66u8; 32]; // Different from Alice's 0x11 and Bob's 0x22
+    let attacker_txid = Txid::from_byte_array(attacker_txid_bytes);
+    let attacker_outpoint = bp::Outpoint::new(attacker_txid, 0u32);
+    use bp::seals::{Noise, TxoSealExt};
+    let attacker_seal = TxoSeal {
+        primary: attacker_outpoint,
+        secondary: TxoSealExt::Noise(Noise::strict_dumb()),
+    };
+    let attacker_seal_str = F1r3flyRgbContract::serialize_seal(&attacker_seal);
+
+    // Verify attacker has different key than Alice
+    assert_ne!(
+        alice_key.secret_bytes(),
+        attacker_key.secret_bytes(),
+        "Attacker should have different key than Alice"
+    );
+
+    // Step 3: Attacker tries to transfer Alice's tokens to themselves
+    // Attacker signs with THEIR key (not Alice's)
+    let transfer_nonce = generate_nonce();
+    let attacker_signature = f1r3fly_rgb::generate_transfer_signature(
+        &alice_seal_str,    // From Alice's UTXO (which attacker doesn't own!)
+        &attacker_seal_str, // To attacker's UTXO
+        5000,               // Try to steal all tokens
+        transfer_nonce,
+        &attacker_key, // Attacker signs with their key
+    )
+    .expect("Failed to generate attacker's signature");
+
+    let _transfer_result = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(alice_seal_str.as_str())),
+                ("to", StrictVal::from(attacker_seal_str.as_str())),
+                ("amount", StrictVal::from(5000u64)),
+                ("toPubKey", StrictVal::from(attacker_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(attacker_signature.as_str()),
+                ),
+            ],
+        )
+        .await
+        .expect("Deploy should succeed (but business logic should reject)");
+
+    // Step 4: Verify attack was REJECTED - Alice still has tokens, attacker has none
+    let alice_balance_after = contract_alice
+        .balance(&alice_seal)
+        .await
+        .expect("Failed to query Alice's balance after attack");
+    assert_eq!(
+        alice_balance_after, 5000,
+        "Alice should still have all 5000 tokens (attack rejected)"
+    );
+
+    let attacker_balance_after = contract_alice
+        .balance(&attacker_seal)
+        .await
+        .expect("Failed to query attacker's balance after attack");
+    assert_eq!(
+        attacker_balance_after, 0,
+        "Attacker should have 0 tokens (attack rejected)"
+    );
+}
+
+#[tokio::test]
+async fn test_transfer_rejects_reused_nonce() {
+    load_env();
+
+    let test_name = "transfer_rejects_reused_nonce";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Alice deploys contract and issues to herself
+    let mut executor_alice = F1r3flyExecutor::new().expect("Failed to create Alice's executor");
+    executor_alice.set_derivation_index(offset);
+    executor_alice.set_auto_derive(false);
+
+    let mut contract_alice = F1r3flyRgbContract::issue(
+        executor_alice,
+        "REPLAY",
+        "Replay Protection Test",
+        10_000,
+        0,
+    )
+    .await
+    .expect("Failed to issue asset");
+
+    let contract_id = contract_alice.contract_id();
+
+    // Get Alice's key
+    let alice_key = contract_alice
+        .executor()
+        .get_child_key()
+        .expect("Failed to get Alice's key");
+    let secp = secp256k1::Secp256k1::new();
+    let alice_public_key = secp256k1::PublicKey::from_secret_key(&secp, &alice_key);
+    let alice_pubkey_hex = hex::encode(alice_public_key.serialize_uncompressed());
+
+    // Issue tokens to Alice
+    let alice_seal = create_query_seal();
+    let alice_seal_str = F1r3flyRgbContract::serialize_seal(&alice_seal);
+
+    let issue_nonce = generate_nonce();
+    let issue_signature = generate_issue_signature(&alice_seal_str, 5000, issue_nonce, &alice_key)
+        .expect("Failed to generate issue signature");
+
+    let _issue_result = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(alice_seal_str.as_str())),
+                ("amount", StrictVal::from(5000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(alice_pubkey_hex.as_str()),
+                ),
+                ("nonce", StrictVal::from(issue_nonce)),
+                ("signatureHex", StrictVal::from(issue_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Issue should succeed");
+
+    // Step 2: Create Bob's key
+    let mut executor_bob = F1r3flyExecutor::new().expect("Failed to create Bob's executor");
+    executor_bob.set_derivation_index(offset + 1);
+    let bob_key = executor_bob
+        .get_child_key()
+        .expect("Failed to get Bob's key");
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &bob_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
+    // Create Bob's seal (deterministic for testing)
+    let bob_txid_bytes = [0x22u8; 32];
+    let bob_txid = Txid::from_byte_array(bob_txid_bytes);
+    let bob_outpoint = bp::Outpoint::new(bob_txid, 0u32);
+    use bp::seals::{Noise, TxoSealExt};
+    let bob_seal = TxoSeal {
+        primary: bob_outpoint,
+        secondary: TxoSealExt::Noise(Noise::strict_dumb()),
+    };
+    let bob_seal_str = F1r3flyRgbContract::serialize_seal(&bob_seal);
+
+    // Step 3: First transfer with specific nonce - should SUCCEED
+    let transfer_nonce = 12345u64; // Fixed nonce for replay test
+    let transfer_signature = f1r3fly_rgb::generate_transfer_signature(
+        &alice_seal_str,
+        &bob_seal_str,
+        1000,
+        transfer_nonce,
+        &alice_key,
+    )
+    .expect("Failed to generate transfer signature");
+
+    let _transfer_result1 = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(alice_seal_str.as_str())),
+                ("to", StrictVal::from(bob_seal_str.as_str())),
+                ("amount", StrictVal::from(1000u64)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(transfer_signature.as_str()),
+                ),
+            ],
+        )
+        .await
+        .expect("First transfer should succeed");
+
+    // Verify first transfer succeeded
+    let alice_balance_after_first = contract_alice
+        .balance(&alice_seal)
+        .await
+        .expect("Failed to query Alice's balance after first transfer");
+    assert_eq!(
+        alice_balance_after_first, 4000,
+        "Alice should have 4000 tokens after first transfer"
+    );
+
+    let bob_balance_after_first = contract_alice
+        .balance(&bob_seal)
+        .await
+        .expect("Failed to query Bob's balance after first transfer");
+    assert_eq!(
+        bob_balance_after_first, 1000,
+        "Bob should have 1000 tokens after first transfer"
+    );
+
+    // Step 4: Try SAME transfer again with SAME nonce - should be REJECTED
+    let _transfer_result2 = contract_alice
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(alice_seal_str.as_str())),
+                ("to", StrictVal::from(bob_seal_str.as_str())),
+                ("amount", StrictVal::from(1000u64)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)), // SAME nonce!
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(transfer_signature.as_str()),
+                ),
+            ],
+        )
+        .await
+        .expect("Deploy should succeed (but business logic should reject)");
+
+    // Step 5: Verify replay was REJECTED - balances should be unchanged from first transfer
+    let alice_balance_after_replay = contract_alice
+        .balance(&alice_seal)
+        .await
+        .expect("Failed to query Alice's balance after replay attempt");
+    assert_eq!(
+        alice_balance_after_replay, 4000,
+        "Alice should still have 4000 tokens (replay rejected)"
+    );
+
+    let bob_balance_after_replay = contract_alice
+        .balance(&bob_seal)
+        .await
+        .expect("Failed to query Bob's balance after replay attempt");
+    assert_eq!(
+        bob_balance_after_replay, 1000,
+        "Bob should still have 1000 tokens (replay rejected)"
     );
 }

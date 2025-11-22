@@ -22,11 +22,14 @@ new rl(`rho:registry:lookup`),
     prevEnvCh,
     initEnv,
     Rho20Token,
+    executeTransfer,
     uriOut,
     secpVerify(`rho:crypto:secp256k1Verify`),
     blake2b256(`rho:crypto:blake2b256Hash`),
     deployerPubKeyCh,
-    usedNoncesCh
+    usedNoncesCh,
+    utxoOwnersCh,
+    utxoNoncesCh
 in {
   // Check if contract already exists (Embers upgrade pattern)
   rl!(`{{URI}}`, *prevEnvCh) |
@@ -63,6 +66,12 @@ in {
               // Track used nonces for replay protection (starts as empty Set)
               // Must explicitly use Set() - {} is interpreted as Map!
               usedNoncesCh!(Set()) |
+              
+              // Track UTXO ownership: utxo -> owner_public_key
+              utxoOwnersCh!({}) |
+              
+              // Track per-UTXO nonces for transfer authorization
+              utxoNoncesCh!({}) |
         
         // =====================================================================
         // Method: getMetadata - Returns token metadata
@@ -103,6 +112,7 @@ in {
         // Parameters:
         //   - recipient: UTXO identifier for token allocation
         //   - amount: Number of tokens to issue
+        //   - recipientPubKey: Public key of the recipient (registered as owner)
         //   - nonce: Unique nonce for replay protection (must not have been used before)
         //   - signatureHex: Hex-encoded signature of (recipient, amount, nonce)
         //
@@ -115,7 +125,7 @@ in {
         // Returns:
         //   - {"success": true, "balance": <amount>} on success
         //   - {"success": false, "error": <reason>} on failure
-        contract Rho20Token(@"issue", @recipient, @amount, @nonce, @signatureHex, ret) = {
+        contract Rho20Token(@"issue", @recipient, @amount, @recipientPubKey, @nonce, @signatureHex, ret) = {
           if (amount <= 0) {
             ret!({"success": false, "error": "Amount must be positive"})
           } else {
@@ -161,13 +171,23 @@ in {
                                   for(@existingBalance <- balFoundCh) {
                                     // Add to existing balance
                                     treeHashMap!("set", currentMap, recipient, existingBalance + amount, *devNull) |
-                                    ret!({"success": true, "balance": existingBalance + amount})
+                                    
+                                    // Register UTXO owner (store recipient public key)
+                                    for(@owners <- utxoOwnersCh) {
+                                      utxoOwnersCh!(owners.set(recipient, recipientPubKey)) |
+                                      ret!({"success": true, "balance": existingBalance + amount})
+                                    }
                                   } |
                                   
                                   for(<- balNotFoundCh) {
                                     // Create new balance entry
                                     treeHashMap!("set", currentMap, recipient, amount, *devNull) |
-                                    ret!({"success": true, "balance": amount})
+                                    
+                                    // Register UTXO owner (store recipient public key)
+                                    for(@owners <- utxoOwnersCh) {
+                                      utxoOwnersCh!(owners.set(recipient, recipientPubKey)) |
+                                      ret!({"success": true, "balance": amount})
+                                    }
                                   }
                                 }
                               } else {
@@ -195,43 +215,131 @@ in {
         // =====================================================================
         // Method: transfer - Transfer tokens between addresses
         // =====================================================================
-        contract Rho20Token(@"transfer", @from, @to, @amount, ret) = {
+        // SECURED: Requires sender signature + nonce for authorization
+        //
+        // Parameters:
+        //   - from: UTXO identifier sending tokens
+        //   - to: UTXO identifier receiving tokens
+        //   - amount: Number of tokens to transfer
+        //   - toPubKey: Public key of recipient (registered as new owner)
+        //   - nonce: Unique nonce for replay protection (per-UTXO)
+        //   - fromSignatureHex: Hex-encoded signature from sender
+        //
+        // Authorization:
+        //   - Message: (from, to, amount, nonce) serialized to bytes
+        //   - Hash: Blake2b-256 of message
+        //   - Signature: ECDSA signature with secp256k1
+        //   - Signer: Must match owner public key registered for 'from' UTXO
+        //
+        // Returns:
+        //   - {"success": true, "from_balance": <amount>, "to_balance": <amount>} on success
+        //   - {"success": false, "error": <reason>} on failure
+        contract Rho20Token(@"transfer", @from, @to, @amount, @toPubKey, @nonce, @fromSignatureHex, ret) = {
           if (amount <= 0) {
             ret!({"success": false, "error": "Amount must be positive"})
           } else {
-            new fromFoundCh, fromNotFoundCh in {
-              for(treeHashMap, @currentMap <<- balanceMapCh) {
-                treeHashMap!("getOrElse", currentMap, from, *fromFoundCh, *fromNotFoundCh) |
-                
-                for(@fromBalance <- fromFoundCh) {
-                  if (fromBalance >= amount) {
-                    // Deduct from sender
-                    treeHashMap!("set", currentMap, from, fromBalance - amount, *devNull) |
+            // Step 1: Get owner of 'from' UTXO
+            new ownerFoundCh, ownerNotFoundCh in {
+              for(@owners <<- utxoOwnersCh) {
+                match owners.get(from) {
+                  Nil => {
+                    ret!({"success": false, "error": "Unknown sender - no registered owner"})
+                  }
+                  ownerPubKey => {
+                    // Step 2: Verify signature
+                    new hashCh, verifyCh in {
+                      blake2b256!((from, to, amount, nonce).toByteArray(), *hashCh) |
+                      
+                      for(@messageHash <- hashCh) {
+                        secpVerify!(messageHash, fromSignatureHex.hexToBytes(), ownerPubKey.hexToBytes(), *verifyCh) |
+                        
+                        for(@isValid <- verifyCh) {
+                          if (isValid) {
+                            // Step 3: Check nonce hasn't been used for this UTXO
+                            for(@utxoNonces <- utxoNoncesCh) {
+                              match utxoNonces.get(from) {
+                                Nil => {
+                                  // First transfer from this UTXO - no nonces used yet
+                                  utxoNoncesCh!(utxoNonces.set(from, Set(nonce))) |
+                                  
+                                  // Proceed with transfer logic
+                                  executeTransfer!(from, to, amount, toPubKey, *ret)
+                                }
+                                usedSet => {
+                                  if (usedSet.contains(nonce)) {
+                                    utxoNoncesCh!(utxoNonces) |  // Put nonces back
+                                    ret!({"success": false, "error": "Nonce already used for this UTXO"})
+                                  } else {
+                                    // Mark nonce as used
+                                    utxoNoncesCh!(utxoNonces.set(from, usedSet.union(Set(nonce)))) |
+                                    
+                                    // Proceed with transfer logic
+                                    executeTransfer!(from, to, amount, toPubKey, *ret)
+                                  }
+                                }
+                              }
+                            }
+                          } else {
+                            ret!({"success": false, "error": "Invalid signature - unauthorized transfer"})
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } |
+        
+        // =====================================================================
+        // Helper: executeTransfer - Execute balance transfer with owner registration
+        // =====================================================================
+        // Called only after authorization passes (signature + nonce verified)
+        // Handles balance updates and registers new owner for recipient UTXO
+        contract executeTransfer(@from, @to, @amount, @toPubKey, ret) = {
+          new fromFoundCh, fromNotFoundCh in {
+            for(treeHashMap, @currentMap <<- balanceMapCh) {
+              treeHashMap!("getOrElse", currentMap, from, *fromFoundCh, *fromNotFoundCh) |
+              
+              for(@fromBalance <- fromFoundCh) {
+                if (fromBalance >= amount) {
+                  // Deduct from sender
+                  treeHashMap!("set", currentMap, from, fromBalance - amount, *devNull) |
+                  
+                  // Update recipient
+                  new toFoundCh, toNotFoundCh in {
+                    treeHashMap!("getOrElse", currentMap, to, *toFoundCh, *toNotFoundCh) |
                     
-                    // Update recipient
-                    new toFoundCh, toNotFoundCh in {
-                      treeHashMap!("getOrElse", currentMap, to, *toFoundCh, *toNotFoundCh) |
+                    for(@toBalance <- toFoundCh) {
+                      // Add to existing recipient balance
+                      treeHashMap!("set", currentMap, to, toBalance + amount, *devNull) |
                       
-                      for(@toBalance <- toFoundCh) {
-                        // Add to existing recipient balance
-                        treeHashMap!("set", currentMap, to, toBalance + amount, *devNull) |
+                      // Register new owner for recipient UTXO
+                      for(@owners <- utxoOwnersCh) {
+                        utxoOwnersCh!(owners.set(to, toPubKey)) |
                         ret!({"success": true, "from_balance": fromBalance - amount, "to_balance": toBalance + amount})
-                      } |
+                      }
+                    } |
+                    
+                    for(<- toNotFoundCh) {
+                      // Create new recipient balance
+                      treeHashMap!("set", currentMap, to, amount, *devNull) |
                       
-                      for(<- toNotFoundCh) {
-                        // Create new recipient balance
-                        treeHashMap!("set", currentMap, to, amount, *devNull) |
+                      // Register new owner for recipient UTXO
+                      for(@owners <- utxoOwnersCh) {
+                        utxoOwnersCh!(owners.set(to, toPubKey)) |
                         ret!({"success": true, "from_balance": fromBalance - amount, "to_balance": amount})
                       }
                     }
-                  } else {
-                    ret!({"success": false, "error": "Insufficient balance", "balance": fromBalance, "requested": amount})
                   }
-                } |
-                
-                for(<- fromNotFoundCh) {
-                  ret!({"success": false, "error": "Sender has no balance"})
+                } else {
+                  ret!({"success": false, "error": "Insufficient balance", "balance": fromBalance, "requested": amount})
                 }
+              } |
+              
+              for(<- fromNotFoundCh) {
+                ret!({"success": false, "error": "Sender has no balance"})
               }
             }
           }

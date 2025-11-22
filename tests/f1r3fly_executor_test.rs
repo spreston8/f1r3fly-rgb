@@ -17,7 +17,8 @@
 
 use f1r3fly_rgb::StrictVal;
 use f1r3fly_rgb::{
-    generate_issue_signature, generate_nonce, ContractId, F1r3flyExecutor, RholangContractLibrary,
+    generate_issue_signature, generate_nonce, generate_transfer_signature, ContractId,
+    F1r3flyExecutor, RholangContractLibrary,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -160,6 +161,12 @@ async fn test_executor_call_method() {
 
     // Generate signature for issue() call
     let child_key = executor.get_child_key().expect("Failed to get child key");
+
+    // Derive public key from child key for owner registration
+    let secp = secp256k1::Secp256k1::new();
+    let child_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let recipient_pubkey_hex = hex::encode(child_public_key.serialize_uncompressed());
+
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, initial_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -171,6 +178,10 @@ async fn test_executor_call_method() {
             &[
                 ("recipient", StrictVal::from(alice.to_string())),
                 ("amount", StrictVal::from(initial_amount)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(recipient_pubkey_hex.as_str()),
+                ),
                 ("nonce", StrictVal::from(nonce)),
                 ("signatureHex", StrictVal::from(signature.as_str())),
             ],
@@ -179,6 +190,15 @@ async fn test_executor_call_method() {
         .expect("Issue failed");
 
     // Step 2: Transfer tokens from alice to bob
+    // Generate transfer signature (alice owns the 'from' UTXO since she just received issue)
+    let transfer_nonce = generate_nonce();
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key); // Bob gets same pubkey for simplicity
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
+    let transfer_signature =
+        generate_transfer_signature(alice, bob, transfer_amount, transfer_nonce, &child_key)
+            .expect("Failed to generate transfer signature");
+
     let deploy_info = executor
         .call_method(
             contract_id,
@@ -187,6 +207,12 @@ async fn test_executor_call_method() {
                 ("from", StrictVal::from(alice.to_string())),
                 ("to", StrictVal::from(bob.to_string())),
                 ("amount", StrictVal::from(transfer_amount)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(transfer_signature.as_str()),
+                ),
             ],
         )
         .await
@@ -267,6 +293,12 @@ async fn test_executor_query_state() {
 
     // Generate signature for issue() call
     let child_key = executor.get_child_key().expect("Failed to get child key");
+
+    // Derive public key from child key for owner registration
+    let secp = secp256k1::Secp256k1::new();
+    let child_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let recipient_pubkey_hex = hex::encode(child_public_key.serialize_uncompressed());
+
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, issue_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -274,6 +306,10 @@ async fn test_executor_query_state() {
     let issue_params = vec![
         ("recipient", StrictVal::from(alice.to_string())),
         ("amount", StrictVal::from(issue_amount)),
+        (
+            "recipientPubKey",
+            StrictVal::from(recipient_pubkey_hex.as_str()),
+        ),
         ("nonce", StrictVal::from(nonce)),
         ("signatureHex", StrictVal::from(signature.as_str())),
     ];
@@ -423,6 +459,12 @@ async fn test_executor_multiple_method_calls() {
 
     // Generate signature for issue() call
     let child_key = executor.get_child_key().expect("Failed to get child key");
+
+    // Derive public key from child key for owner registration
+    let secp = secp256k1::Secp256k1::new();
+    let child_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let recipient_pubkey_hex = hex::encode(child_public_key.serialize_uncompressed());
+
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, issue_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -434,6 +476,10 @@ async fn test_executor_multiple_method_calls() {
             &[
                 ("recipient", StrictVal::from(alice.to_string())),
                 ("amount", StrictVal::from(issue_amount)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(recipient_pubkey_hex.as_str()),
+                ),
                 ("nonce", StrictVal::from(nonce)),
                 ("signatureHex", StrictVal::from(signature.as_str())),
             ],
@@ -448,6 +494,15 @@ async fn test_executor_multiple_method_calls() {
 
     // Step 2: Transfer from alice to bob
     let transfer_to_bob = 1500;
+
+    // Generate transfer signature (alice owns the 'from' UTXO)
+    let transfer1_nonce = generate_nonce();
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+    let transfer1_sig =
+        generate_transfer_signature(alice, bob, transfer_to_bob, transfer1_nonce, &child_key)
+            .expect("Failed to generate transfer signature");
+
     let transfer_result = executor
         .call_method(
             contract_id,
@@ -456,6 +511,9 @@ async fn test_executor_multiple_method_calls() {
                 ("from", StrictVal::from(alice.to_string())),
                 ("to", StrictVal::from(bob.to_string())),
                 ("amount", StrictVal::from(transfer_to_bob)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer1_nonce)),
+                ("fromSignatureHex", StrictVal::from(transfer1_sig.as_str())),
             ],
         )
         .await
@@ -474,6 +532,20 @@ async fn test_executor_multiple_method_calls() {
 
     // Step 3: Transfer from bob to charlie
     let transfer_to_charlie = 500;
+
+    // Generate transfer signature (bob owns the 'from' UTXO now, but using same key for simplicity)
+    let transfer2_nonce = generate_nonce();
+    let charlie_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let charlie_pubkey_hex = hex::encode(charlie_public_key.serialize_uncompressed());
+    let transfer2_sig = generate_transfer_signature(
+        bob,
+        charlie,
+        transfer_to_charlie,
+        transfer2_nonce,
+        &child_key,
+    )
+    .expect("Failed to generate transfer signature 2");
+
     executor
         .call_method(
             contract_id,
@@ -482,6 +554,9 @@ async fn test_executor_multiple_method_calls() {
                 ("from", StrictVal::from(bob.to_string())),
                 ("to", StrictVal::from(charlie.to_string())),
                 ("amount", StrictVal::from(transfer_to_charlie)),
+                ("toPubKey", StrictVal::from(charlie_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer2_nonce)),
+                ("fromSignatureHex", StrictVal::from(transfer2_sig.as_str())),
             ],
         )
         .await
@@ -568,6 +643,12 @@ async fn test_executor_query_after_method_call() {
     // Step 1: Issue tokens to alice
     // Generate signature for issue() call
     let child_key = executor.get_child_key().expect("Failed to get child key");
+
+    // Derive public key from child key for owner registration
+    let secp = secp256k1::Secp256k1::new();
+    let child_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let recipient_pubkey_hex = hex::encode(child_public_key.serialize_uncompressed());
+
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, initial_amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -579,6 +660,10 @@ async fn test_executor_query_after_method_call() {
             &[
                 ("recipient", StrictVal::from(alice.to_string())),
                 ("amount", StrictVal::from(initial_amount)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(recipient_pubkey_hex.as_str()),
+                ),
                 ("nonce", StrictVal::from(nonce)),
                 ("signatureHex", StrictVal::from(signature.as_str())),
             ],
@@ -608,6 +693,14 @@ async fn test_executor_query_after_method_call() {
     );
 
     // Step 3: Transfer from alice to charlie
+    // Generate transfer signature (alice owns the 'from' UTXO)
+    let transfer_nonce = generate_nonce();
+    let charlie_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let charlie_pubkey_hex = hex::encode(charlie_public_key.serialize_uncompressed());
+    let transfer_sig =
+        generate_transfer_signature(alice, charlie, transfer_amount, transfer_nonce, &child_key)
+            .expect("Failed to generate transfer signature");
+
     executor
         .call_method(
             contract_id,
@@ -616,6 +709,9 @@ async fn test_executor_query_after_method_call() {
                 ("from", StrictVal::from(alice.to_string())),
                 ("to", StrictVal::from(charlie.to_string())),
                 ("amount", StrictVal::from(transfer_amount)),
+                ("toPubKey", StrictVal::from(charlie_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                ("fromSignatureHex", StrictVal::from(transfer_sig.as_str())),
             ],
         )
         .await
@@ -713,6 +809,12 @@ async fn test_executor_caching_works() {
 
     // Generate signature for issue() call
     let child_key = executor.get_child_key().expect("Failed to get child key");
+
+    // Derive public key from child key for owner registration
+    let secp = secp256k1::Secp256k1::new();
+    let child_public_key = secp256k1::PublicKey::from_secret_key(&secp, &child_key);
+    let recipient_pubkey_hex = hex::encode(child_public_key.serialize_uncompressed());
+
     let nonce = generate_nonce();
     let signature = generate_issue_signature(alice, amount, nonce, &child_key)
         .expect("Failed to generate signature");
@@ -720,6 +822,10 @@ async fn test_executor_caching_works() {
     let params = &[
         ("recipient", StrictVal::from(alice)),
         ("amount", StrictVal::from(amount)),
+        (
+            "recipientPubKey",
+            StrictVal::from(recipient_pubkey_hex.as_str()),
+        ),
         ("nonce", StrictVal::from(nonce)),
         ("signatureHex", StrictVal::from(signature.as_str())),
     ];
