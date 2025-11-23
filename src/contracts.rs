@@ -111,6 +111,8 @@ impl F1r3flyRgbContracts {
                     "transfer".to_string(),
                     "balanceOf".to_string(),
                     "getMetadata".to_string(),
+                    "claim".to_string(),
+                    "ownerOf".to_string(),
                 ],
             )
             .await?;

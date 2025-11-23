@@ -48,13 +48,15 @@ pub mod tapret;
 
 // Re-exports for convenience
 pub use bitcoin_anchor::{AnchorConfig, BitcoinAnchorError, BitcoinAnchorTracker};
-pub use consignment::{F1r3flyConsignment, F1r3flyStateProof};
+pub use consignment::{F1r3flyConsignment, F1r3flyStateProof, WitnessMapping};
 pub use contract::F1r3flyRgbContract;
 pub use contract_library::RholangContractLibrary;
 pub use contracts::F1r3flyRgbContracts;
 pub use error::F1r3flyRgbError;
 pub use executor::{ContractMetadata, F1r3flyExecutionResult, F1r3flyExecutor};
-pub use signature_utils::{generate_issue_signature, generate_nonce, generate_transfer_signature};
+pub use signature_utils::{
+    generate_claim_signature, generate_issue_signature, generate_nonce, generate_transfer_signature,
+};
 pub use tapret::{
     create_anchor, create_tapret_anchor, create_test_psbt_with_taproot, embed_tapret_commitment,
     extract_tapret_commitment, verify_tapret_commitment, verify_tapret_proof_in_tx, TapretError,

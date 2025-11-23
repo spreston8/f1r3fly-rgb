@@ -166,7 +166,7 @@ async fn test_contract_lifecycle_with_seal_tracking() {
 
     // Verify metadata
     let methods = &contract.metadata().methods;
-    assert_eq!(methods.len(), 4, "Contract should have exactly 4 methods");
+    assert_eq!(methods.len(), 6, "Contract should have exactly 6 methods");
 
     // Verify exact method set (order-independent)
     let mut expected_methods = vec![
@@ -174,6 +174,8 @@ async fn test_contract_lifecycle_with_seal_tracking() {
         "issue".to_string(),
         "transfer".to_string(),
         "balanceOf".to_string(),
+        "claim".to_string(),
+        "ownerOf".to_string(),
     ];
     let mut actual_methods = methods.clone();
     expected_methods.sort();
@@ -1375,5 +1377,787 @@ async fn test_transfer_rejects_reused_nonce() {
     assert_eq!(
         bob_balance_after_replay, 1000,
         "Bob should still have 1000 tokens (replay rejected)"
+    );
+}
+
+// ============================================================================
+// Phase 3 (Issue 3) Tests: Claim Method (Witness ID Migration)
+// ============================================================================
+
+/// Test: Claim migrates balance from witness ID to real UTXO
+///
+/// Verifies:
+/// - Balance is migrated from witness_id to real_utxo
+/// - Witness balance becomes 0 after claim
+/// - Real UTXO has the full balance after claim
+#[tokio::test]
+async fn test_claim_migrates_balance_and_ownership() {
+    load_env();
+
+    let test_name = "claim_migrates_balance_and_ownership";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Alice deploys contract and issues to herself
+    let mut executor_alice = F1r3flyExecutor::new().expect("Failed to create Alice's executor");
+    executor_alice.set_derivation_index(offset);
+    executor_alice.set_auto_derive(false);
+
+    let mut contract =
+        F1r3flyRgbContract::issue(executor_alice, "CLAIM", "Claim Test Token", 10_000, 0)
+            .await
+            .expect("Failed to issue asset");
+
+    let contract_id = contract.contract_id();
+
+    // Get Alice's key
+    let alice_key = contract
+        .executor()
+        .get_child_key()
+        .expect("Failed to get Alice's key");
+    let secp = secp256k1::Secp256k1::new();
+    let alice_public_key = secp256k1::PublicKey::from_secret_key(&secp, &alice_key);
+    let alice_pubkey_hex = hex::encode(alice_public_key.serialize_uncompressed());
+
+    // Create Alice's seal
+    let alice_seal = create_query_seal();
+    let alice_seal_str = F1r3flyRgbContract::serialize_seal(&alice_seal);
+
+    // Step 2: Issue 10000 tokens to Alice
+    let issue_nonce = generate_nonce();
+    let issue_signature = generate_issue_signature(&alice_seal_str, 10000, issue_nonce, &alice_key)
+        .expect("Failed to generate issue signature");
+
+    let _issue_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(alice_seal_str.as_str())),
+                ("amount", StrictVal::from(10000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(alice_pubkey_hex.as_str()),
+                ),
+                ("nonce", StrictVal::from(issue_nonce)),
+                ("signatureHex", StrictVal::from(issue_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Issue should succeed");
+
+    // Verify Alice has balance
+    let alice_balance_initial = contract
+        .balance(&alice_seal)
+        .await
+        .expect("Failed to query Alice's initial balance");
+    assert_eq!(
+        alice_balance_initial, 10000,
+        "Alice should have 10000 tokens after issue"
+    );
+
+    // Step 3: Alice transfers to witness ID (simulating Bob receiving to a not-yet-existing UTXO)
+    let mut executor_bob = F1r3flyExecutor::new().expect("Failed to create Bob's executor");
+    executor_bob.set_derivation_index(offset + 1);
+    let bob_key = executor_bob
+        .get_child_key()
+        .expect("Failed to get Bob's key");
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &bob_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
+    // Create witness ID (deterministic for testing)
+    let witness_id = "witness:a3467636599ef254:0";
+
+    // Alice transfers to witness ID
+    let transfer_nonce = generate_nonce();
+    let transfer_signature = f1r3fly_rgb::generate_transfer_signature(
+        &alice_seal_str,
+        witness_id,
+        2500,
+        transfer_nonce,
+        &alice_key,
+    )
+    .expect("Failed to generate transfer signature");
+
+    let _transfer_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(alice_seal_str.as_str())),
+                ("to", StrictVal::from(witness_id)),
+                ("amount", StrictVal::from(2500u64)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(transfer_signature.as_str()),
+                ),
+            ],
+        )
+        .await
+        .expect("Transfer to witness should succeed");
+
+    // Step 4: Verify balance at witness ID using string-based query
+    // Query witness balance directly using the witness ID string
+    let witness_balance_before = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(witness_id))],
+        )
+        .await
+        .expect("Failed to query witness balance");
+
+    let witness_balance_value = witness_balance_before
+        .as_u64()
+        .or_else(|| witness_balance_before.as_i64().map(|i| i as u64))
+        .expect("Witness balance should be a number");
+
+    assert_eq!(
+        witness_balance_value, 2500,
+        "Witness ID should have 2500 tokens before claim"
+    );
+
+    // Step 5: Bob claims to real UTXO
+    let real_utxo = "9b7b09e4cd136021:0";
+
+    // Generate claim signature
+    let claim_sig = f1r3fly_rgb::generate_claim_signature(witness_id, real_utxo, &bob_key).unwrap();
+
+    let _claim_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "claim",
+            &[
+                ("witness_id", StrictVal::from(witness_id)),
+                ("real_utxo", StrictVal::from(real_utxo)),
+                ("claimantSignatureHex", StrictVal::from(claim_sig.as_str())),
+            ],
+        )
+        .await
+        .expect("Claim should succeed");
+
+    // Step 6: Verify witness balance is now 0
+    let witness_balance_after = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(witness_id))],
+        )
+        .await
+        .expect("Failed to query witness balance after claim");
+
+    let witness_balance_after_value = witness_balance_after
+        .as_u64()
+        .or_else(|| witness_balance_after.as_i64().map(|i| i as u64))
+        .unwrap_or(0);
+
+    assert_eq!(
+        witness_balance_after_value, 0,
+        "Witness balance should be 0 after claim"
+    );
+
+    // Step 7: Verify real UTXO has the balance
+    let real_balance = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(real_utxo))],
+        )
+        .await
+        .expect("Failed to query real UTXO balance");
+
+    let real_balance_value = real_balance
+        .as_u64()
+        .or_else(|| real_balance.as_i64().map(|i| i as u64))
+        .expect("Real UTXO balance should be a number");
+
+    assert_eq!(
+        real_balance_value, 2500,
+        "Real UTXO should have 2500 tokens after claim"
+    );
+
+    // Step 8: Verify ownership migrated from witness to real UTXO
+    // Query owner using raw strings (matching the exact keys used in claim)
+    let witness_owner_result = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "ownerOf",
+            &[("address", StrictVal::from(witness_id))],
+        )
+        .await
+        .expect("Failed to query witness owner");
+
+    let witness_owner = witness_owner_result.as_str().unwrap_or("");
+    assert_eq!(
+        witness_owner, "",
+        "Witness ID should no longer have an owner after claim"
+    );
+
+    let real_owner_result = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "ownerOf",
+            &[("address", StrictVal::from(real_utxo))],
+        )
+        .await
+        .expect("Failed to query real UTXO owner");
+
+    let real_owner = real_owner_result
+        .as_str()
+        .expect("Owner should be a string");
+    assert!(
+        !real_owner.is_empty(),
+        "Real UTXO should have an owner after claim"
+    );
+
+    assert_eq!(
+        real_owner, bob_pubkey_hex,
+        "Real UTXO owner should be Bob's public key"
+    );
+}
+
+/// Test: Claim rejects invalid signature (unauthorized claim attempt)
+///
+/// Verifies:
+/// - Attacker with wrong key cannot claim witness balance
+/// - Balance remains at witness ID after failed claim
+/// - Real UTXO has no balance after failed claim
+#[tokio::test]
+async fn test_claim_rejects_invalid_signature() {
+    load_env();
+
+    let test_name = "claim_rejects_invalid_signature";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Alice deploys contract and issues to herself
+    let mut executor_alice = F1r3flyExecutor::new().expect("Failed to create Alice's executor");
+    executor_alice.set_derivation_index(offset);
+    executor_alice.set_auto_derive(false);
+
+    let mut contract =
+        F1r3flyRgbContract::issue(executor_alice, "CLAIMSEC", "Claim Security Test", 10_000, 0)
+            .await
+            .expect("Failed to issue asset");
+
+    let contract_id = contract.contract_id();
+
+    // Get Alice's key
+    let alice_key = contract
+        .executor()
+        .get_child_key()
+        .expect("Failed to get Alice's key");
+    let secp = secp256k1::Secp256k1::new();
+    let alice_public_key = secp256k1::PublicKey::from_secret_key(&secp, &alice_key);
+    let alice_pubkey_hex = hex::encode(alice_public_key.serialize_uncompressed());
+
+    // Create Alice's seal
+    let alice_seal = create_query_seal();
+    let alice_seal_str = F1r3flyRgbContract::serialize_seal(&alice_seal);
+
+    // Step 2: Issue tokens to Alice
+    let issue_nonce = generate_nonce();
+    let issue_signature = generate_issue_signature(&alice_seal_str, 5000, issue_nonce, &alice_key)
+        .expect("Failed to generate issue signature");
+
+    let _issue_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(alice_seal_str.as_str())),
+                ("amount", StrictVal::from(5000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(alice_pubkey_hex.as_str()),
+                ),
+                ("nonce", StrictVal::from(issue_nonce)),
+                ("signatureHex", StrictVal::from(issue_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Issue should succeed");
+
+    // Step 3: Alice transfers to witness ID for Bob
+    let mut executor_bob = F1r3flyExecutor::new().expect("Failed to create Bob's executor");
+    executor_bob.set_derivation_index(offset + 1);
+    let bob_key = executor_bob
+        .get_child_key()
+        .expect("Failed to get Bob's key");
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &bob_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
+    let witness_id = "witness:a3467636599ef254:0";
+
+    let transfer_nonce = generate_nonce();
+    let transfer_signature = f1r3fly_rgb::generate_transfer_signature(
+        &alice_seal_str,
+        witness_id,
+        2500,
+        transfer_nonce,
+        &alice_key,
+    )
+    .expect("Failed to generate transfer signature");
+
+    let _transfer_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(alice_seal_str.as_str())),
+                ("to", StrictVal::from(witness_id)),
+                ("amount", StrictVal::from(2500u64)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(transfer_signature.as_str()),
+                ),
+            ],
+        )
+        .await
+        .expect("Transfer to witness should succeed");
+
+    // Verify witness has balance
+    let witness_balance_before = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(witness_id))],
+        )
+        .await
+        .expect("Failed to query witness balance");
+
+    let witness_balance_value = witness_balance_before
+        .as_u64()
+        .or_else(|| witness_balance_before.as_i64().map(|i| i as u64))
+        .expect("Witness balance should be a number");
+
+    assert_eq!(
+        witness_balance_value, 2500,
+        "Witness ID should have 2500 tokens"
+    );
+
+    // Step 4: Attacker tries to claim with wrong key
+    let mut executor_attacker =
+        F1r3flyExecutor::new().expect("Failed to create attacker's executor");
+    executor_attacker.set_derivation_index(offset + 999);
+    let attacker_key = executor_attacker
+        .get_child_key()
+        .expect("Failed to get attacker's key");
+
+    let attacker_utxo = "attacker_utxo:0";
+
+    // Attacker signs with THEIR key (not Bob's)
+    let wrong_sig =
+        f1r3fly_rgb::generate_claim_signature(witness_id, attacker_utxo, &attacker_key).unwrap();
+
+    let _claim_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "claim",
+            &[
+                ("witness_id", StrictVal::from(witness_id)),
+                ("real_utxo", StrictVal::from(attacker_utxo)),
+                ("claimantSignatureHex", StrictVal::from(wrong_sig.as_str())),
+            ],
+        )
+        .await
+        .expect("Deploy should succeed (but business logic should reject)");
+
+    // Step 5: Verify claim was rejected - balance should still be at witness ID
+    let witness_balance_after = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(witness_id))],
+        )
+        .await
+        .expect("Failed to query witness balance after failed claim");
+
+    let witness_balance_after_value = witness_balance_after
+        .as_u64()
+        .or_else(|| witness_balance_after.as_i64().map(|i| i as u64))
+        .expect("Witness balance should be a number");
+
+    assert_eq!(
+        witness_balance_after_value, 2500,
+        "Witness balance should remain 2500 (claim rejected)"
+    );
+
+    // Verify attacker UTXO has no balance
+    let attacker_balance = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(attacker_utxo))],
+        )
+        .await
+        .expect("Failed to query attacker balance");
+
+    let attacker_balance_value = attacker_balance
+        .as_u64()
+        .or_else(|| attacker_balance.as_i64().map(|i| i as u64))
+        .unwrap_or(0);
+
+    assert_eq!(
+        attacker_balance_value, 0,
+        "Attacker should have 0 tokens (claim rejected)"
+    );
+}
+
+/// Test: Recipient can transfer after claiming (proves ownership migrated)
+///
+/// Verifies:
+/// - Bob can claim from witness_id to real_utxo
+/// - Bob can then transfer FROM real_utxo (proves he owns it)
+/// - Transfer succeeds with Bob's signature
+/// - Final balances are correct (Bob has remainder, Carol has transferred amount)
+#[tokio::test]
+async fn test_recipient_can_transfer_after_claim() {
+    load_env();
+
+    let test_name = "recipient_can_transfer_after_claim";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Alice deploys contract and issues to herself
+    let mut executor_alice = F1r3flyExecutor::new().expect("Failed to create Alice's executor");
+    executor_alice.set_derivation_index(offset);
+    executor_alice.set_auto_derive(false);
+
+    let mut contract = F1r3flyRgbContract::issue(
+        executor_alice,
+        "CLAIMOWN",
+        "Claim Ownership Test",
+        10_000,
+        0,
+    )
+    .await
+    .expect("Failed to issue asset");
+
+    let contract_id = contract.contract_id();
+
+    // Get Alice's key
+    let alice_key = contract
+        .executor()
+        .get_child_key()
+        .expect("Failed to get Alice's key");
+    let secp = secp256k1::Secp256k1::new();
+    let alice_public_key = secp256k1::PublicKey::from_secret_key(&secp, &alice_key);
+    let alice_pubkey_hex = hex::encode(alice_public_key.serialize_uncompressed());
+
+    // Create Alice's seal
+    let alice_seal = create_query_seal();
+    let alice_seal_str = F1r3flyRgbContract::serialize_seal(&alice_seal);
+
+    // Step 2: Issue tokens to Alice
+    let issue_nonce = generate_nonce();
+    let issue_signature = generate_issue_signature(&alice_seal_str, 5000, issue_nonce, &alice_key)
+        .expect("Failed to generate issue signature");
+
+    let _issue_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(alice_seal_str.as_str())),
+                ("amount", StrictVal::from(5000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(alice_pubkey_hex.as_str()),
+                ),
+                ("nonce", StrictVal::from(issue_nonce)),
+                ("signatureHex", StrictVal::from(issue_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Issue should succeed");
+
+    // Step 3: Alice transfers to witness ID for Bob
+    let mut executor_bob = F1r3flyExecutor::new().expect("Failed to create Bob's executor");
+    executor_bob.set_derivation_index(offset + 1);
+    let bob_key = executor_bob
+        .get_child_key()
+        .expect("Failed to get Bob's key");
+    let bob_public_key = secp256k1::PublicKey::from_secret_key(&secp, &bob_key);
+    let bob_pubkey_hex = hex::encode(bob_public_key.serialize_uncompressed());
+
+    let witness_id = "witness:a3467636599ef254:0";
+
+    let transfer_nonce = generate_nonce();
+    let transfer_signature = f1r3fly_rgb::generate_transfer_signature(
+        &alice_seal_str,
+        witness_id,
+        2500,
+        transfer_nonce,
+        &alice_key,
+    )
+    .expect("Failed to generate transfer signature");
+
+    let _transfer_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(alice_seal_str.as_str())),
+                ("to", StrictVal::from(witness_id)),
+                ("amount", StrictVal::from(2500u64)),
+                ("toPubKey", StrictVal::from(bob_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce)),
+                (
+                    "fromSignatureHex",
+                    StrictVal::from(transfer_signature.as_str()),
+                ),
+            ],
+        )
+        .await
+        .expect("Transfer to witness should succeed");
+
+    // Step 4: Bob claims to real UTXO
+    let bob_real_utxo = "9b7b09e4cd136021:0";
+
+    let claim_sig =
+        f1r3fly_rgb::generate_claim_signature(witness_id, bob_real_utxo, &bob_key).unwrap();
+
+    let _claim_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "claim",
+            &[
+                ("witness_id", StrictVal::from(witness_id)),
+                ("real_utxo", StrictVal::from(bob_real_utxo)),
+                ("claimantSignatureHex", StrictVal::from(claim_sig.as_str())),
+            ],
+        )
+        .await
+        .expect("Claim should succeed");
+
+    // Verify Bob's real UTXO has balance
+    let bob_balance_after_claim = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(bob_real_utxo))],
+        )
+        .await
+        .expect("Failed to query Bob's balance after claim");
+
+    let bob_balance_value = bob_balance_after_claim
+        .as_u64()
+        .or_else(|| bob_balance_after_claim.as_i64().map(|i| i as u64))
+        .expect("Bob balance should be a number");
+
+    assert_eq!(
+        bob_balance_value, 2500,
+        "Bob should have 2500 tokens at real UTXO after claim"
+    );
+
+    // Step 5: Bob transfers to Carol FROM real_utxo
+    // This proves Bob owns real_utxo (ownership migrated during claim)
+    let mut executor_carol = F1r3flyExecutor::new().expect("Failed to create Carol's executor");
+    executor_carol.set_derivation_index(offset + 2);
+    let carol_key = executor_carol
+        .get_child_key()
+        .expect("Failed to get Carol's key");
+    let carol_public_key = secp256k1::PublicKey::from_secret_key(&secp, &carol_key);
+    let carol_pubkey_hex = hex::encode(carol_public_key.serialize_uncompressed());
+
+    let carol_utxo = "carol_utxo:0";
+
+    // Bob signs with HIS key
+    let transfer_nonce2 = generate_nonce();
+    let transfer_sig2 = f1r3fly_rgb::generate_transfer_signature(
+        bob_real_utxo,
+        carol_utxo,
+        1000,
+        transfer_nonce2,
+        &bob_key, // Bob's key signs
+    )
+    .expect("Failed to generate transfer signature");
+
+    let _transfer_result2 = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "transfer",
+            &[
+                ("from", StrictVal::from(bob_real_utxo)),
+                ("to", StrictVal::from(carol_utxo)),
+                ("amount", StrictVal::from(1000u64)),
+                ("toPubKey", StrictVal::from(carol_pubkey_hex.as_str())),
+                ("nonce", StrictVal::from(transfer_nonce2)),
+                ("fromSignatureHex", StrictVal::from(transfer_sig2.as_str())),
+            ],
+        )
+        .await
+        .expect("Bob should be able to transfer after claiming");
+
+    // Step 6: Verify final balances
+    let bob_balance_final = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(bob_real_utxo))],
+        )
+        .await
+        .expect("Failed to query Bob's final balance");
+
+    let bob_balance_final_value = bob_balance_final
+        .as_u64()
+        .or_else(|| bob_balance_final.as_i64().map(|i| i as u64))
+        .expect("Bob final balance should be a number");
+
+    assert_eq!(
+        bob_balance_final_value, 1500,
+        "Bob should have 1500 tokens left after transferring 1000 to Carol"
+    );
+
+    let carol_balance = contract
+        .executor()
+        .query_state(
+            contract_id,
+            "balanceOf",
+            &[("address", StrictVal::from(carol_utxo))],
+        )
+        .await
+        .expect("Failed to query Carol's balance");
+
+    let carol_balance_value = carol_balance
+        .as_u64()
+        .or_else(|| carol_balance.as_i64().map(|i| i as u64))
+        .expect("Carol balance should be a number");
+
+    assert_eq!(
+        carol_balance_value, 1000,
+        "Carol should have 1000 tokens after Bob's transfer"
+    );
+
+    // Success of this transfer proves ownership migrated during claim!
+    // If ownership didn't migrate, the transfer would have failed signature verification
+}
+
+// ============================================================================
+// Test: ownerOf Query Method
+// ============================================================================
+
+/// Test: ownerOf returns correct ownership information
+///
+/// Verifies:
+/// - Returns None for UTXOs with no owner
+/// - Returns correct public key after issuance
+/// - Ownership information matches expected values
+#[tokio::test]
+async fn test_owner_of_query() {
+    load_env();
+
+    let test_name = "owner_of_query";
+    let offset = test_derivation_offset(test_name);
+
+    // Step 1: Deploy contract
+    let mut executor = F1r3flyExecutor::new().expect("Failed to create executor");
+    executor.set_derivation_index(offset);
+    executor.set_auto_derive(false);
+
+    let mut contract = F1r3flyRgbContract::issue(executor, "OWNER", "Owner Test Token", 10_000, 0)
+        .await
+        .expect("Failed to issue asset");
+
+    let contract_id = contract.contract_id();
+
+    // Get signing key
+    let signing_key = contract
+        .executor()
+        .get_child_key()
+        .expect("Failed to get signing key");
+    let secp = secp256k1::Secp256k1::new();
+    let signing_public_key = secp256k1::PublicKey::from_secret_key(&secp, &signing_key);
+    let recipient_pubkey_hex = hex::encode(signing_public_key.serialize_uncompressed());
+
+    // Create test seal
+    let test_seal = create_query_seal();
+    let test_seal_str = F1r3flyRgbContract::serialize_seal(&test_seal);
+
+    // Step 2: Query owner BEFORE any issuance (should be None)
+    let owner_before = contract
+        .owner_of(&test_seal)
+        .await
+        .expect("Failed to query owner before issuance");
+
+    assert_eq!(
+        owner_before, None,
+        "Owner should be None before any tokens issued to this UTXO"
+    );
+
+    // Step 3: Issue tokens to seal (registers ownership)
+    let issue_nonce = generate_nonce();
+    let issue_signature = generate_issue_signature(&test_seal_str, 1000, issue_nonce, &signing_key)
+        .expect("Failed to generate issue signature");
+
+    let _issue_result = contract
+        .executor_mut()
+        .call_method(
+            contract_id,
+            "issue",
+            &[
+                ("recipient", StrictVal::from(test_seal_str.as_str())),
+                ("amount", StrictVal::from(1000u64)),
+                (
+                    "recipientPubKey",
+                    StrictVal::from(recipient_pubkey_hex.as_str()),
+                ),
+                ("nonce", StrictVal::from(issue_nonce)),
+                ("signatureHex", StrictVal::from(issue_signature.as_str())),
+            ],
+        )
+        .await
+        .expect("Issue should succeed");
+
+    // Step 4: Query owner AFTER issuance (should be Some(pubkey))
+    let owner_after = contract
+        .owner_of(&test_seal)
+        .await
+        .expect("Failed to query owner after issuance");
+
+    assert!(
+        owner_after.is_some(),
+        "Owner should be registered after issuance"
+    );
+
+    assert_eq!(
+        owner_after.unwrap(),
+        recipient_pubkey_hex,
+        "Owner should match the recipient public key"
+    );
+
+    // Step 5: Create a second UTXO and verify it has no owner
+    let (_, second_seal) = create_matching_seal_pair(5000, 99);
+
+    let second_owner = contract
+        .owner_of(&second_seal)
+        .await
+        .expect("Failed to query second UTXO owner");
+
+    assert_eq!(
+        second_owner, None,
+        "Second UTXO should have no owner (never received tokens)"
     );
 }

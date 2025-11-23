@@ -105,6 +105,36 @@ in {
         } |
         
         // =====================================================================
+        // Method: ownerOf - Query the owner of a UTXO
+        // =====================================================================
+        // Returns the public key (as hex string) of the UTXO owner, or empty string if unowned
+        //
+        // Parameters:
+        //   - address: UTXO identifier (e.g., "txid:vout" or "witness:hash:vout")
+        //
+        // Returns:
+        //   - Hex-encoded public key string if owner exists
+        //   - Empty string ("") if no owner registered for this address
+        //
+        // Use Cases:
+        //   - Verify ownership after claim() migration
+        //   - Debug ownership state
+        //   - Validate transfer authorization logic
+        //
+        contract Rho20Token(@"ownerOf", @address, ret) = {
+          for(@owners <<- utxoOwnersCh) {
+            match owners.get(address) {
+              Nil => {
+                ret!("")
+              }
+              ownerPubKey => {
+                ret!(ownerPubKey)
+              }
+            }
+          }
+        } |
+        
+        // =====================================================================
         // Method: issue - Allocate tokens from unallocated supply
         // =====================================================================
         // SECURED: Requires deployer signature + nonce for authorization
@@ -340,6 +370,94 @@ in {
               
               for(<- fromNotFoundCh) {
                 ret!({"success": false, "error": "Sender has no balance"})
+              }
+            }
+          }
+        } |
+        
+        // =====================================================================
+        // METHOD: claim
+        // =====================================================================
+        // Migrate balance and ownership from witness_id to real UTXO
+        //
+        // Called by recipient after Bitcoin TX confirms to claim their balance
+        //
+        // Parameters:
+        //   - witness_id: Temporary identifier (e.g. "witness:a3467636:0")
+        //   - real_utxo: Actual Bitcoin UTXO (e.g. "9b7b09e4cd136021:0")
+        //   - claimantSignatureHex: Signature proving ownership
+        //
+        // Returns:
+        //   - {"success": true, "migrated_balance": <amount>} on success
+        //   - {"success": false, "error": <reason>} on failure
+        //
+        // Security:
+        //   - Requires signature from registered owner of witness_id
+        //   - Atomically migrates BOTH balance AND ownership
+        //   - Prevents replay (consumes witness_id balance after migration)
+        //
+        contract Rho20Token(@"claim", @witness_id, @real_utxo, @claimantSignatureHex, ret) = {
+          // Step 1: Get owner of witness_id
+          for(@owners <<- utxoOwnersCh) {
+            match owners.get(witness_id) {
+              Nil => {
+                ret!({"success": false, "error": "No owner registered for witness_id"})
+              }
+              ownerPubKey => {
+                // Step 2: Verify signature
+                // Message: (witness_id, real_utxo)
+                new hashCh, verifyCh in {
+                  blake2b256!((witness_id, real_utxo).toByteArray(), *hashCh) |
+                  
+                  for(@messageHash <- hashCh) {
+                    secpVerify!(messageHash, claimantSignatureHex.hexToBytes(), ownerPubKey.hexToBytes(), *verifyCh) |
+                    
+                    for(@isValid <- verifyCh) {
+                      if (isValid) {
+                        // Step 3: Atomic migration of balance and ownership
+                        // Get witness balance from treeHashMap
+                        new witnessFoundCh, witnessNotFoundCh in {
+                          for(treeHashMap, @currentMap <<- balanceMapCh) {
+                            treeHashMap!("getOrElse", currentMap, witness_id, *witnessFoundCh, *witnessNotFoundCh) |
+                            
+                            for(@witnessBalance <- witnessFoundCh) {
+                              if (witnessBalance <= 0) {
+                                // Zero or negative balance at witness_id
+                                ret!({"success": false, "error": "Zero or negative balance at witness_id", "balance": witnessBalance})
+                              } else {
+                                // ATOMIC MIGRATION:
+                                // 1. Clear witness balance (set to 0)
+                                // 2. Set real UTXO balance
+                                // 3. Update ownership
+                                
+                                treeHashMap!("set", currentMap, witness_id, 0, *devNull) |
+                                treeHashMap!("set", currentMap, real_utxo, witnessBalance, *devNull) |
+                                
+                                // Update ownership map
+                                for(@currentOwners <- utxoOwnersCh) {
+                                  utxoOwnersCh!(currentOwners.delete(witness_id).set(real_utxo, ownerPubKey)) |
+                                  ret!({
+                                    "success": true,
+                                    "migrated_balance": witnessBalance,
+                                    "from": witness_id,
+                                    "to": real_utxo
+                                  })
+                                }
+                              }
+                            } |
+                            
+                            for(<- witnessNotFoundCh) {
+                              // No balance at witness_id (already claimed or never existed)
+                              ret!({"success": false, "error": "No balance at witness_id"})
+                            }
+                          }
+                        }
+                      } else {
+                        ret!({"success": false, "error": "Invalid signature - unauthorized claim"})
+                      }
+                    }
+                  }
+                }
               }
             }
           }

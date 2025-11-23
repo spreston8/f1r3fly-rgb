@@ -195,6 +195,83 @@ pub fn generate_transfer_signature(
     Ok(hex::encode(signature.serialize_der()))
 }
 
+/// Generate signature for claim() method call
+///
+/// Creates a signature that matches the Rholang contract's verification using protobuf encoding.
+/// The message format must exactly match what Rholang's `.toByteArray()` produces for the tuple
+/// `(witness_id, real_utxo)`.
+///
+/// # Arguments
+/// * `witness_id` - The temporary witness identifier (e.g. "witness:a3467636:0")
+/// * `real_utxo` - The actual Bitcoin UTXO identifier (e.g. "9b7b09e4cd136021:0")
+/// * `signing_key` - The secp256k1 private key to sign with
+///
+/// # Returns
+/// Hex-encoded DER signature string that can be passed to the Rholang `claim()` method
+///
+/// # Example
+/// ```ignore
+/// let signature = generate_claim_signature("witness:abc:0", "real_txid:0", &private_key)?;
+/// ```
+pub fn generate_claim_signature(
+    witness_id: &str,
+    real_utxo: &str,
+    signing_key: &SecretKey,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Build protobuf Par structure for tuple: (witness_id, real_utxo)
+    // Must match exactly what Rholang's .toByteArray() produces
+    let par = f1r3fly_models::rhoapi::Par {
+        exprs: vec![f1r3fly_models::rhoapi::Expr {
+            expr_instance: Some(f1r3fly_models::rhoapi::expr::ExprInstance::ETupleBody(
+                f1r3fly_models::rhoapi::ETuple {
+                    ps: vec![
+                        // First element: witness_id (String)
+                        f1r3fly_models::rhoapi::Par {
+                            exprs: vec![f1r3fly_models::rhoapi::Expr {
+                                expr_instance: Some(
+                                    f1r3fly_models::rhoapi::expr::ExprInstance::GString(
+                                        witness_id.to_string(),
+                                    ),
+                                ),
+                            }],
+                            ..Default::default()
+                        },
+                        // Second element: real_utxo (String)
+                        f1r3fly_models::rhoapi::Par {
+                            exprs: vec![f1r3fly_models::rhoapi::Expr {
+                                expr_instance: Some(
+                                    f1r3fly_models::rhoapi::expr::ExprInstance::GString(
+                                        real_utxo.to_string(),
+                                    ),
+                                ),
+                            }],
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )),
+        }],
+        ..Default::default()
+    };
+
+    // Encode to protobuf bytes (matches Rholang's .toByteArray())
+    let message_bytes = par.encode_to_vec();
+
+    // Hash with Blake2b-256
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(&message_bytes);
+    let message_hash: [u8; 32] = hasher.finalize().into();
+
+    // Sign with secp256k1
+    let secp = secp256k1::Secp256k1::new();
+    let message_obj = Message::from_digest(message_hash);
+    let signature = secp.sign_ecdsa(&message_obj, signing_key);
+
+    // Rholang secpVerify expects DER-encoded signatures (variable length, typically 70-72 bytes)
+    Ok(hex::encode(signature.serialize_der()))
+}
+
 /// Generate a unique nonce for replay protection
 ///
 /// Creates a nonce using timestamp (seconds since epoch) combined with a random component.

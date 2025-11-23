@@ -167,6 +167,8 @@ impl F1r3flyRgbContract {
                     "transfer".to_string(),
                     "balanceOf".to_string(),
                     "getMetadata".to_string(),
+                    "claim".to_string(),
+                    "ownerOf".to_string(),
                 ],
             )
             .await?;
@@ -318,6 +320,69 @@ impl F1r3flyRgbContract {
                     result
                 ))
             })
+    }
+
+    /// Query the owner of a UTXO
+    ///
+    /// Returns the public key (as hex string) of the owner registered for this UTXO,
+    /// or `None` if no owner is registered.
+    ///
+    /// # Arguments
+    ///
+    /// * `seal` - The TxoSeal to query ownership for
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(pubkey_hex))` - Owner exists, returns hex-encoded public key
+    /// - `Ok(None)` - No owner registered for this UTXO
+    /// - `Err(...)` - Query failed
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let seal = /* ... */;
+    /// let owner = contract.owner_of(&seal).await?;
+    /// match owner {
+    ///     Some(pubkey) => println!("Owner: {}", pubkey),
+    ///     None => println!("No owner registered"),
+    /// }
+    /// ```
+    pub async fn owner_of(&self, seal: &TxoSeal) -> Result<Option<String>, F1r3flyRgbError> {
+        log::info!("📊 CONTRACT: owner_of() called");
+
+        // Serialize seal to query parameter
+        let seal_id = Self::serialize_seal(seal);
+        log::info!("  Input seal: {:?}", seal);
+        log::info!("  Serialized seal_id: {}", seal_id);
+
+        // Query the contract
+        let result = self
+            .executor
+            .query_state(
+                self.contract_id,
+                "ownerOf",
+                &[("address", StrictVal::from(seal_id.as_str()))],
+            )
+            .await?;
+
+        log::info!("  Query result: {:?}", result);
+
+        // Parse result (serde_json::Value)
+        if result.is_null() {
+            // Nil from Rholang becomes JSON null
+            Ok(None)
+        } else if let Some(owner_hex) = result.as_str() {
+            // Owner exists as string
+            if owner_hex.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(owner_hex.to_string()))
+            }
+        } else {
+            // Unexpected type - log warning but return None gracefully
+            log::warn!("  Unexpected ownerOf result type: {:?}", result);
+            Ok(None)
+        }
     }
 
     /// Serialize a TxoSeal to a stable string identifier

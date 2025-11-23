@@ -12,6 +12,21 @@ use bp::seals::{Anchor, WTxoSeal};
 use hypersonic::ContractId;
 use serde::{Deserialize, Serialize};
 
+/// Witness identifier mapping for claim process
+/// Links witness_id (temporary) → real UTXO (after Bitcoin TX)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WitnessMapping {
+    /// Temporary witness identifier used during transfer
+    /// Format: "witness:{address_hash}:{vout}"
+    pub witness_id: String,
+
+    /// Recipient's Bitcoin address (for UTXO matching)
+    pub recipient_address: String,
+
+    /// Expected vout in the Bitcoin transaction
+    pub expected_vout: u32,
+}
+
 /// F1r3fly-RGB consignment for asset transfers
 ///
 /// A lightweight transfer package containing:
@@ -80,6 +95,11 @@ pub struct F1r3flyConsignment {
     /// Whether this is a genesis consignment (vs transfer)
     /// Genesis consignments don't require Tapret proof validation
     pub is_genesis: bool,
+
+    /// Witness identifier mapping (only for transfers, not genesis)
+    /// Used by recipient to claim balance from witness_id to real UTXO
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub witness_mapping: Option<WitnessMapping>,
 }
 
 /// F1r3fly state proof for consignment validation
@@ -184,6 +204,7 @@ impl F1r3flyConsignment {
             seals,
             witness_txs,
             is_genesis,
+            witness_mapping: None,
         })
     }
 
