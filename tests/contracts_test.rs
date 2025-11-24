@@ -149,7 +149,8 @@ async fn test_contracts_get_and_mutate() {
         let contract = contracts.get(&id).expect("Contract not found");
         assert_eq!(contract.contract_id(), id);
         assert!(!contract.metadata().registry_uri.is_empty());
-        assert_eq!(contract.metadata().methods.len(), 4);
+        // Contract has 6 methods: getMetadata, balanceOf, ownerOf, issue, transfer, claim
+        assert_eq!(contract.metadata().methods.len(), 6);
     }
 
     // Test mutable access

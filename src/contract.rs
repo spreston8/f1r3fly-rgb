@@ -413,8 +413,12 @@ impl F1r3flyRgbContract {
         // Extract primary outpoint (txid + vout)
         let outpoint = seal.primary;
 
-        // Serialize txid as hex (Bitcoin standard format)
-        let txid_hex = hex::encode(outpoint.txid.to_byte_array());
+        // bp::Txid stores bytes in internal (little-endian) format
+        // We need to reverse them to get the standard Bitcoin display format (big-endian)
+        // This must match the format used in asset issuance and claim operations
+        let mut txid_bytes = outpoint.txid.to_byte_array();
+        txid_bytes.reverse(); // Convert from little-endian to big-endian
+        let txid_hex = hex::encode(txid_bytes);
 
         // Get vout as u32
         let vout = outpoint.vout.into_u32();
