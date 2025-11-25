@@ -278,38 +278,57 @@ impl F1r3flyConsignment {
                 ));
             }
         } else {
-            // TRANSFER: Require full Tapret proof
-            log::debug!("Verifying Bitcoin anchor with Tapret proof (transfer consignment)");
-
-            // Check Tapret proof exists
-            let tapret_proof = self.bitcoin_anchor.dbc_proof.as_ref().ok_or_else(|| {
-                F1r3flyRgbError::InvalidConsignment(
-                    "Transfer consignment missing Tapret proof (dbc_proof). \
-                     Cannot verify Bitcoin commitment."
-                        .to_string(),
-                )
-            })?;
-
+            // TRANSFER: Verify Bitcoin commitment (Tapret or OP_RETURN)
             // Get Bitcoin transaction from witness
             let witness_tx = self.witness_txs.first().ok_or_else(|| {
                 F1r3flyRgbError::InvalidConsignment(
-                    "No witness transaction for Tapret verification. \
+                    "No witness transaction for commitment verification. \
                      Transfer consignment must include Bitcoin transaction."
                         .to_string(),
                 )
             })?;
 
-            // Perform full cryptographic verification
-            use crate::verify_tapret_proof_in_tx;
-            verify_tapret_proof_in_tx(witness_tx, self.f1r3fly_proof.state_hash, tapret_proof)
-                .map_err(|e| {
+            // Check which anchoring method was used
+            if let Some(tapret_proof) = self.bitcoin_anchor.dbc_proof.as_ref() {
+                // Tapret proof present - verify Tapret commitment
+                log::debug!("Verifying Bitcoin anchor with Tapret proof (transfer consignment)");
+
+                // Perform full cryptographic verification
+                use crate::verify_tapret_proof_in_tx;
+                verify_tapret_proof_in_tx(witness_tx, self.f1r3fly_proof.state_hash, tapret_proof)
+                    .map_err(|e| {
+                        F1r3flyRgbError::InvalidConsignment(format!(
+                            "Tapret proof verification failed: {}",
+                            e
+                        ))
+                    })?;
+
+                log::debug!("✓ Tapret proof cryptographically verified");
+            } else {
+                // No Tapret proof - verify OP_RETURN commitment
+                log::debug!("Verifying Bitcoin anchor with OP_RETURN (transfer consignment)");
+
+                // Extract OP_RETURN commitment from transaction (should be at output 0)
+                use crate::extract_opreturn_commitment;
+                let extracted_hash = extract_opreturn_commitment(witness_tx, 0).map_err(|e| {
                     F1r3flyRgbError::InvalidConsignment(format!(
-                        "Tapret proof verification failed: {}",
+                        "OP_RETURN extraction failed: {}",
                         e
                     ))
                 })?;
 
-            log::debug!("✓ Tapret proof cryptographically verified");
+                // Verify the extracted hash matches the state hash
+                if extracted_hash != self.f1r3fly_proof.state_hash {
+                    return Err(F1r3flyRgbError::InvalidConsignment(format!(
+                        "OP_RETURN hash mismatch. Expected: {}, Found: {}",
+                        hex::encode(self.f1r3fly_proof.state_hash),
+                        hex::encode(extracted_hash)
+                    )));
+                }
+
+                log::debug!("✓ OP_RETURN commitment cryptographically verified");
+            }
+
             log::debug!("   Witness TX count: {}", self.witness_txs.len());
         }
 

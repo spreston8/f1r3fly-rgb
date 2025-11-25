@@ -125,25 +125,27 @@ pub fn embed_opreturn_commitment(
 /// # Ok(())
 /// # }
 /// ```
-pub fn extract_opreturn_commitment(tx: &Transaction, output_index: usize) -> Result<[u8; 32]> {
+pub fn extract_opreturn_commitment(tx: &bp::Tx, output_index: usize) -> Result<[u8; 32]> {
     // Validate output index
-    if output_index >= tx.output.len() {
+    if output_index >= tx.outputs.len() {
         return Err(OpReturnError::InvalidOutputIndex {
             index: output_index,
-            max: tx.output.len(),
+            max: tx.outputs.len(),
         });
     }
 
-    let output = &tx.output[output_index];
+    let output = &tx.outputs[output_index];
 
-    // Check if OP_RETURN
-    if !output.script_pubkey.is_op_return() {
+    // Get script bytes as a slice
+    let script_bytes = output.script_pubkey.as_slice();
+
+    // Check if OP_RETURN (first byte should be 0x6a)
+    if script_bytes.is_empty() || script_bytes[0] != 0x6a {
         return Err(OpReturnError::NotOpReturn);
     }
 
     // Extract data from OP_RETURN script
     // Format: OP_RETURN <push_opcode> <32_bytes>
-    let script_bytes = output.script_pubkey.as_bytes();
 
     // Minimum length: OP_RETURN (1) + PUSHBYTES_32 (1) + data (32) = 34
     if script_bytes.len() < 34 {
